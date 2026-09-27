@@ -287,22 +287,27 @@ private func makeHand(
 @Suite struct CursorControllerTests {
     private typealias Segment = (hand: Hand?, seconds: Double)
 
-    /// 校準範圍為畫面中央 0.4–0.6、螢幕 1000×500 pt。以 30 fps 依序送入各段的手，回傳最後一幀的輸出。
-    private func run(_ segments: [Segment], width: Int = 1280, height: Int = 720) -> CursorController.Output? {
+    /// 校準範圍為畫面中央 0.4–0.6、螢幕 1000×500 pt。以 30 fps 依序送入各段的手，回傳每一幀的輸出。
+    private func outputs(_ segments: [Segment], width: Int = 1280, height: Int = 720) -> [CursorController.Output] {
         var controller = CursorController(
             calibration: Calibration(palmWidth: 153.6, minX: 0.4, minY: 0.4, maxX: 0.6, maxY: 0.6),
             screenWidth: 1000, screenHeight: 500
         )
-        var output: CursorController.Output?
+        var outputs: [CursorController.Output] = []
         var frame = 0
         for segment in segments {
             for _ in 0..<Int((segment.seconds * 30).rounded()) {
                 let hands = segment.hand.map { [$0] } ?? []
-                output = controller.update(hands: hands, width: width, height: height, at: Double(frame) / 30)
+                outputs.append(controller.update(hands: hands, width: width, height: height, at: Double(frame) / 30))
                 frame += 1
             }
         }
-        return output
+        return outputs
+    }
+
+    /// 同 `outputs`，只回傳最後一幀。
+    private func run(_ segments: [Segment], width: Int = 1280, height: Int = 720) -> CursorController.Output? {
+        outputs(segments, width: width, height: height).last
     }
 
     /// 先做喚醒手勢（張手 → 握拳），再接 `rest`。
@@ -311,9 +316,9 @@ private func makeHand(
         return wake + rest
     }
 
-    /// 食指指向、食指尖在 (`x`, `y`) 的手。
-    private func pointing(_ x: Double, _ y: Double) -> Hand {
-        makeHand(pointing: true, offset: Vec2(x: x - 0.54, y: y - 0.52))
+    /// 食指指向、食指尖在 (`x`, `y`) 的手；`pinched` 為 true 時拇指尖碰到食指尖。
+    private func pointing(_ x: Double, _ y: Double, pinched: Bool = false) -> Hand {
+        makeHand(pointing: true, thumbTip: pinched ? Vec2(x: 0.54, y: 0.52) : Vec2(x: 0.62, y: 0.45), offset: Vec2(x: x - 0.54, y: y - 0.52))
     }
 
     @Test func pointingAfterWakeMovesCursor() throws {
@@ -342,12 +347,65 @@ private func makeHand(
         #expect(output.state == .idle)
     }
 
+    @Test func pinchClicksOnlyWhileActive() {
+        let pinch: [Segment] = [(pointing(0.5, 0.5), 1), (pointing(0.5, 0.5, pinched: true), 0.2), (pointing(0.5, 0.5), 0.5)]
+        #expect(outputs(woken() + pinch).compactMap(\.button) == [.down, .up])
+        #expect(outputs(pinch).allSatisfy { $0.button == nil })
+    }
+
     @Test func losingHandDeactivates() throws {
         let short = try #require(run(woken((pointing(0.5, 0.5), 1), (nil, 1.5), (pointing(0.5, 0.5), 1))))
         let long = try #require(run(woken((pointing(0.5, 0.5), 1), (nil, 2.2), (pointing(0.5, 0.5), 1))))
         #expect(short.state == .active)
         #expect(long.state == .idle)
         #expect(long.cursor == nil)
+    }
+}
+
+@Suite struct PinchClickerTests {
+    /// 食指對應的游標 (`x`, `y`) 與捏合比例；nil 表示看不到手。
+    private typealias Frame = (x: Double, y: Double, ratio: Double)?
+
+    /// 手不動，食指指著 (500, 300) 半秒。
+    private let pointing = [Frame](repeating: (500, 300, 1), count: 15)
+
+    /// 以 30 fps 依序送入各幀，食指根部每幀移動 `anchorStep`（正規化影像座標），回傳每一幀的輸出。
+    private func run(_ frames: [Frame], anchorStep: Double = 0) -> [PinchClicker.Output] {
+        var clicker = PinchClicker()
+        return frames.enumerated().map { i, frame in
+            clicker.update(
+                cursor: frame.map { Vec2(x: $0.x, y: $0.y) }, ratio: frame?.ratio,
+                anchor: frame.map { _ in Vec2(x: 0.5 + anchorStep * Double(i), y: 0.5) }, valid: true, at: Double(i) / 30
+            )
+        }
+    }
+
+    @Test func clickLandsWhereFingerPointedBeforePinch() {
+        // 捏合時食指尖往下帶著游標偏移，放開時再回來。
+        let outputs = run(pointing + [(500, 200, 0.7), (500, 150, 0.4), (500, 120, 0.2), (500, 100, 0.15), (500, 150, 0.5), (500, 250, 0.8)])
+        #expect(outputs.compactMap(\.button) == [.down, .up])
+        #expect(outputs.dropFirst(15).allSatisfy { $0.cursor == Vec2(x: 500, y: 300) })
+    }
+
+    @Test func holdingPinchDrags() {
+        // 捏住 0.6 秒後手往右移 100 pt，放開途中的移動不算。
+        let hold = [Frame](repeating: (500, 100, 0.15), count: 18)
+        let outputs = run(pointing + [(500, 200, 0.7), (500, 100, 0.2)] + hold + [(550, 100, 0.15), (600, 100, 0.15), (650, 150, 0.4), (600, 250, 0.8)])
+        #expect(outputs.compactMap(\.button) == [.down, .up])
+        #expect(outputs.last?.cursor == Vec2(x: 600, y: 300))
+    }
+
+    @Test func movingHandDoesNotFreeze() {
+        // 手快速移動時比例掉了三成（例如動態模糊），不是捏合。
+        let frames: [Frame] = (0..<20).map { i in (Double(i) * 50, 300, i == 15 ? 0.7 : 1) }
+        let outputs = run(frames, anchorStep: 0.05)
+        #expect(outputs.map(\.cursor) == frames.map { $0.map { Vec2(x: $0.x, y: $0.y) } })
+        #expect(outputs.allSatisfy { $0.button == nil })
+    }
+
+    @Test func releasesWhenHandIsLost() {
+        let outputs = run(pointing + [(500, 200, 0.7), (500, 100, 0.2), (500, 100, 0.15)] + [Frame](repeating: nil, count: 12))
+        #expect(outputs.compactMap(\.button) == [.down, .up])
     }
 }
 

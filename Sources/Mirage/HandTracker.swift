@@ -58,6 +58,8 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private var waiting: Pending?
     private var mode = Mode.waiting
     private var state = ControlState.idle
+    /// 已送出左鍵按下、還沒送出放開。
+    private var pressed = false
 
     init(sink: @escaping @MainActor @Sendable (Event) -> Void) {
         self.sink = sink
@@ -115,6 +117,7 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
                 session.stopRunning()
                 device.unlockForConfiguration()
                 waiting = nil
+                release()
                 if case .controlling(var controller) = mode {
                     controller.deactivate()
                     mode = .controlling(controller)
@@ -128,6 +131,7 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     /// 開始校準；完成後改用新的校準結果控制游標。
     func calibrate() {
         queue.async { [self] in
+            release()
             mode = .calibrating(CalibrationSession())
             publish(.idle)
         }
@@ -187,7 +191,8 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         case .controlling(var controller):
             let output = controller.update(hands: hands, width: width, height: height, at: t)
             mode = .controlling(controller)
-            if let cursor = output.cursor { move(to: cursor) }
+            if output.state != .active { release() }
+            if let cursor = output.cursor { post(output.button, at: cursor) }
             publish(output.state)
         }
     }
@@ -196,11 +201,31 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         CursorController(calibration: calibration, screenWidth: screen.width, screenHeight: screen.height)
     }
 
-    /// 游標（主螢幕 pt，原點左下）→ CGEvent 全域座標（原點左上）。需要輔助使用權限，沒有時系統會直接丟棄事件。
-    private func move(to cursor: Vec2) {
-        let point = CGPoint(x: screen.minX + cursor.x, y: screen.maxY - cursor.y)
-        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?
-            .post(tap: .cghidEventTap)
+    /// 游標（主螢幕 pt，原點左下）→ CGEvent 全域座標（原點左上）。按著左鍵時移動要送拖曳事件。
+    private func post(_ button: PinchClicker.Button?, at cursor: Vec2) {
+        let type: CGEventType = switch button {
+        case .down: .leftMouseDown
+        case .up: .leftMouseUp
+        case nil: pressed ? .leftMouseDragged : .mouseMoved
+        }
+        send(type, at: CGPoint(x: screen.minX + cursor.x, y: screen.maxY - cursor.y))
+    }
+
+    /// 停止控制時放開還按著的左鍵，否則系統會當作左鍵一直按著。
+    private func release() {
+        guard pressed, let location = CGEvent(source: nil)?.location else { return }
+        send(.leftMouseUp, at: location)
+    }
+
+    /// 需要輔助使用權限，沒有時系統會直接丟棄事件。
+    private func send(_ type: CGEventType, at point: CGPoint) {
+        let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
+        if type == .leftMouseDown || type == .leftMouseUp {
+            // 標明單擊：點擊次數為 0 的按鍵事件，有些 App 不當作點擊。
+            event?.setIntegerValueField(.mouseEventClickState, value: 1)
+            pressed = type == .leftMouseDown
+        }
+        event?.post(tap: .cghidEventTap)
     }
 
     private func hand(from observation: VNHumanHandPoseObservation) -> Hand? {

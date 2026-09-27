@@ -57,11 +57,12 @@ public struct ControlStateMachine: Sendable {
     }
 }
 
-/// 主要手 → 啟用狀態 → 游標位置（螢幕 pt，原點左下）。只有 Active 時輸出游標。
+/// 主要手 → 啟用狀態 → 游標位置（螢幕 pt，原點左下）與左鍵。只有 Active 時輸出游標與左鍵。
 public struct CursorController: Sendable {
     public struct Output: Sendable {
         public var state: ControlState
         public var cursor: Vec2?
+        public var button: PinchClicker.Button?
     }
 
     public let calibration: Calibration
@@ -80,6 +81,7 @@ public struct CursorController: Sendable {
 
     private var machine = ControlStateMachine()
     private var wake = WakeDetector()
+    private var clicker = PinchClicker()
     private var filter = OneEuroFilter2D()
     private var velocity = Vec2(x: 0, y: 0)
     private var last: (point: Vec2, t: Double)?
@@ -102,21 +104,34 @@ public struct CursorController: Sendable {
         let inside = tip.map { isInside($0) } ?? false
         let pointing = inside && geometry?.isPointing(palmWidth: palm ?? 0) == true
         let state = machine.update(woke: woke, pointing: pointing, visible: tip != nil, inside: inside, at: t)
-        guard let tip else { return Output(state: state, cursor: nil) }
-
-        if let last, t - last.t > resetGap {
-            filter.reset()
-            velocity = Vec2(x: 0, y: 0)
-            self.last = nil
+        var cursor: Vec2?
+        if let tip {
+            if let last, t - last.t > resetGap {
+                filter.reset()
+                velocity = Vec2(x: 0, y: 0)
+                self.last = nil
+            }
+            let filtered = filter(map(tip), at: t)
+            if let last, t > last.t {
+                velocity.x += 0.5 * ((filtered.x - last.point.x) / (t - last.t) - velocity.x)
+                velocity.y += 0.5 * ((filtered.y - last.point.y) / (t - last.t) - velocity.y)
+            }
+            last = (filtered, t)
+            cursor = clamp(Vec2(x: filtered.x + velocity.x * lead, y: filtered.y + velocity.y * lead))
         }
-        let filtered = filter(map(tip), at: t)
-        if let last, t > last.t {
-            velocity.x += 0.5 * ((filtered.x - last.point.x) / (t - last.t) - velocity.x)
-            velocity.y += 0.5 * ((filtered.y - last.point.y) / (t - last.t) - velocity.y)
+        guard state == .active else {
+            clicker = PinchClicker()
+            return Output(state: state, cursor: nil)
         }
-        last = (filtered, t)
-        guard state == .active else { return Output(state: state, cursor: nil) }
-        return Output(state: state, cursor: clamp(Vec2(x: filtered.x + velocity.x * lead, y: filtered.y + velocity.y * lead)))
+        // 用沿用的掌寬：捏合時拇指常擋住食指根部。
+        var ratio: Double?
+        if sized, let palm, let gap = geometry?.distance(.thumbTip, .indexTip) { ratio = gap / palm }
+        // 食指彎曲代表握拳或拿東西，不是捏合；關節不確定時不擋，以免漏掉真的捏合。
+        let click = clicker.update(
+            cursor: cursor, ratio: ratio, anchor: sized ? geometry?.normalized(.indexMCP) : nil,
+            valid: sized && geometry?.indexCurled != true, at: t
+        )
+        return Output(state: state, cursor: click.cursor, button: click.button)
     }
 
     /// 快捷鍵、螢幕鎖定等外部原因停用：回到 Idle，須重新喚醒。
