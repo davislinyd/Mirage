@@ -13,6 +13,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self?.handle(event)
     }
     private let panel = CalibrationPanel()
+    private let halo = CursorHalo()
     private var statusItem: NSStatusItem?
     private let stateItem = NSMenuItem()
     private let enableItem = NSMenuItem(title: "啟用（⌃⌥⌘M）", action: #selector(toggle), keyEquivalent: "")
@@ -118,16 +119,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch event {
         case .state(let state):
             self.state = state
+            halo.show(state)
         case .calibration(let progress):
             // 取消後仍可能收到幾幀已排隊的進度。
             guard calibrating else { return }
+            panel.show(progress)
             if case .done(let result) = progress {
                 calibrating = false
                 calibration = result
                 UserDefaults.standard.set(try? JSONEncoder().encode(result), forKey: Self.calibrationKey)
-                panel.hide()
-            } else {
-                panel.show(progress)
+                // 完成訊息停留幾秒，讓使用者看完下一步再關閉；期間又開始校準就不關。
+                Task {
+                    try? await Task.sleep(for: .seconds(4))
+                    if !calibrating { panel.hide() }
+                }
             }
         }
         refresh()

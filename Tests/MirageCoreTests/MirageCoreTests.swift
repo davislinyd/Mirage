@@ -208,7 +208,7 @@ private func makeHand(
     }
 
     @Test func circleSetsPalmWidthAndRange() {
-        guard case .done(let calibration)? = progress(radius: 0.15, seconds: 4.1).last else {
+        guard case .done(let calibration)? = progress(radius: 0.15, seconds: 7.1).last else {
             Issue.record("校準沒有完成")
             return
         }
@@ -218,7 +218,7 @@ private func makeHand(
     }
 
     @Test func smallCircleRestarts() {
-        let results = progress(radius: 0.03, seconds: 4.5)
+        let results = progress(radius: 0.03, seconds: 7.5)
         let done = results.filter {
             if case .done = $0 { return true }
             return false
@@ -231,14 +231,15 @@ private func makeHand(
         #expect(progress(radius: 0.15, seconds: 1, pointing: false).last == .collecting(remaining: 4, hint: .notPointing))
     }
 
-    @Test func hintsWhetherTimeCounts() {
+    @Test func countsDownBeforeCollecting() {
         var session = CalibrationSession()
         #expect(session.update(hands: [], width: 1280, height: 720, at: 0) == .collecting(remaining: 4, hint: .noHand))
-        guard case .collecting(_, let hint)? = progress(radius: 0.15, seconds: 1).last else {
-            Issue.record("一秒內不應完成校準")
+        guard case .countdown? = progress(radius: 0.15, seconds: 1).last,
+              case .collecting(_, .pointing)? = progress(radius: 0.15, seconds: 4).last
+        else {
+            Issue.record("應先倒數 3 秒，再開始收集")
             return
         }
-        #expect(hint == .pointing)
     }
 }
 

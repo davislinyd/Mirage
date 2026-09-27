@@ -28,20 +28,23 @@ final class CalibrationPanel: NSObject, NSWindowDelegate {
 
     /// `progress` 為 nil 表示還沒收到鏡頭畫面。
     func show(_ progress: CalibrationSession.Progress?) {
-        var lines = ["伸出食指、指尖朝上，其他手指收起，在舒適的範圍內慢慢畫大圈。"]
+        var lines = ["伸出食指、指尖朝上，其他手指收起。倒數結束後，在舒適的範圍內慢慢畫大圈。"]
         switch progress {
         case nil:
             lines.append("等待鏡頭畫面…")
+        case .countdown(let remaining):
+            lines.append("看到食指了，\(Int(remaining.rounded(.up))) 秒後開始畫圈。")
         case .collecting(_, .noHand):
             lines.append("看不到手：把手舉到鏡頭前，手掌朝向鏡頭。")
         case .collecting(_, .notPointing):
             lines.append("看到手了，但不是食指朝上：伸直食指，其他手指收起。")
         case .collecting(let remaining, .pointing):
-            lines.append(String(format: "很好，繼續畫圈：剩 %.1f 秒", remaining))
+            lines.append("慢慢畫大圈：剩 \(Int(remaining.rounded(.up))) 秒")
         case .tooSmall:
             retried = true
         case .done:
-            break
+            retried = false
+            lines = ["校準完成。", "接下來張手 → 握拳喚醒，游標周圍的光圈開始閃爍後，伸出食指就能控制游標。"]
         }
         if retried { lines.append("範圍太小，已重新開始，請畫大一點的圈。") }
         display(lines.joined(separator: "\n"))
