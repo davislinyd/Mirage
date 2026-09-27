@@ -13,4 +13,4 @@ cp App/Info.plist "$app/Contents/"
 identity=${MIRAGE_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"' '/"(Developer ID Application|Apple Development): /{print $2; exit}')}
 # Hardened Runtime 下要有相機 entitlement 才能用鏡頭。
 codesign --force --options runtime --entitlements App/Mirage.entitlements --sign "${identity:--}" "$app"
-echo "已建置 $app（簽章：${identity:-ad-hoc}）"
+echo "已建置 ${app}（簽章：${identity:-ad-hoc}）"
