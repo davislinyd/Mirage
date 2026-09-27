@@ -86,8 +86,6 @@ public struct FrameRecord: Codable, Sendable {
 
     /// 主要操作手：優先右手，其次平均信心值最高者。
     public var primaryHand: Hand? {
-        hands.max { a, b in
-            (a.chirality == .right ? 1 : 0, a.meanConfidence) < (b.chirality == .right ? 1 : 0, b.meanConfidence)
-        }
+        hands.primary
     }
 }

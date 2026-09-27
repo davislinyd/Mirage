@@ -62,3 +62,12 @@ public struct Hand: Codable, Sendable, Equatable {
         joints.reduce(0) { $0 + $1.c } / Double(joints.count)
     }
 }
+
+extension Array where Element == Hand {
+    /// 主要操作手：優先右手，其次平均信心值最高者。
+    public var primary: Hand? {
+        self.max { a, b in
+            (a.chirality == .right ? 1 : 0, a.meanConfidence) < (b.chirality == .right ? 1 : 0, b.meanConfidence)
+        }
+    }
+}
