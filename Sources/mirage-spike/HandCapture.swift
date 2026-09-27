@@ -143,12 +143,13 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     /// 系統視訊效果（選單列的 Video 選單）會在影像交給 App 前加工，可能增加延遲；人物置中還會移動裁切範圍，
     /// 讓手的座標跟著跳。人物置中可由 App 接管並關閉，其他效果只能由使用者關閉。
     private static func disableVideoEffects() -> String {
+        // 不列 `reactionEffectsEnabled`：它只代表 App 能顯示反應效果，macOS 對所有 App 預設開啟、使用者無法關閉；
+        // 會不會自動偵測手勢並觸發效果，由 `reactionEffectGesturesEnabled` 決定。
         let effects = [
             ("人物置中", AVCaptureDevice.isCenterStageEnabled),
             ("人像", AVCaptureDevice.isPortraitEffectEnabled),
             ("攝影棚燈光", AVCaptureDevice.isStudioLightEnabled),
             ("背景", AVCaptureDevice.isBackgroundReplacementEnabled),
-            ("反應", AVCaptureDevice.reactionEffectsEnabled),
             ("反應手勢", AVCaptureDevice.reactionEffectGesturesEnabled),
         ]
         AVCaptureDevice.centerStageControlMode = .app
