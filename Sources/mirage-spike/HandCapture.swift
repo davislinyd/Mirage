@@ -2,7 +2,8 @@
 @preconcurrency import Vision
 import MirageCore
 
-/// 相機擷取與 Vision 手部偵測。所有可變狀態只在 `queue` 上存取，因此標記為 @unchecked Sendable。
+/// 相機擷取與 Vision 手部偵測。所有可變狀態只在 `queue` 上存取；非同步推論時 `request` 與待推論影像交給
+/// `workQueue`，由 `busy` 保證同一時間只有一個推論。因此標記為 @unchecked Sendable。
 final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     enum Event: Sendable {
         case frame(SkeletonSnapshot)
@@ -22,20 +23,28 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         }
     }
 
-    /// 延遲比較階段依序使用的相機設定。
-    private struct CameraConfig {
-        let label: String
-        let format: AVCaptureDevice.Format
-        let range: AVFrameRateRange
-        let maxHands: Int
+    /// 一幀待推論的影像與它在擷取當下決定的階段資訊。推論完成前沒有人會改寫這個 pixel buffer。
+    private struct Pending: @unchecked Sendable {
+        let pixelBuffer: CVPixelBuffer
+        let t: Double
+        let deliveryMs: Double
+        let phase: Phase
+        let remaining: Double?
+        let config: String?
     }
 
+    private typealias Detection = (hands: [Hand], inferenceMs: Double, latencyMs: Double)
     private typealias Candidate = (format: AVCaptureDevice.Format, range: AVFrameRateRange, size: CMVideoDimensions)
+
+    /// 延遲比較階段依序使用的處理方式。同步：在影格回呼裡等推論完成（M0 的做法），推論偶爾變慢時，
+    /// 後面的影格會一直晚一到兩幀送達。非同步：回呼立刻返回，推論在 `workQueue` 進行，忙碌時只保留最新一幀。
+    private let modes: [(label: String, inline: Bool)] = [
+        ("A 同步", true), ("B 非同步", false), ("C 同步（重測 A）", true), ("D 非同步（重測 B）", false),
+    ]
 
     private let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "mirage.capture", qos: .userInteractive)
-    /// 切換相機格式時擷取管線會重新設定，不在影格回呼裡等它。
-    private let configQueue = DispatchQueue(label: "mirage.camera-config")
+    private let workQueue = DispatchQueue(label: "mirage.vision", qos: .userInteractive)
     private let request = VNDetectHumanHandPoseRequest()
     private let jointNames: [VNHumanHandPoseObservation.JointName] = [
         .wrist,
@@ -49,8 +58,11 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private let sink: @MainActor @Sendable (Event) -> Void
 
     private var device: AVCaptureDevice?
-    private var configs: [CameraConfig] = []
-    private var activeConfig = 0
+    /// 非同步推論進行中。
+    private var busy = false
+    /// 推論忙碌時收到的最新一幀，較舊的直接略過。
+    private var waiting: Pending?
+    private var skipped = 0
     private var clock = CMClockGetHostTimeClock()
     private var probe: GestureProbe
     private var frames: [FrameRecord] = []
@@ -88,19 +100,6 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         guard let best = (preferred.isEmpty ? formats : preferred).max(by: {
             ($0.range.maxFrameRate, $0.size.width) < ($1.range.maxFrameRate, $1.size.width)
         }) else { throw CaptureError.noFormat }
-        // 延遲比較：A 是正式設定，B 降低解析度，C 只偵測一隻手，D 重測 A，檢查延遲是否隨時間漂移。
-        let small = formats.filter { $0.size.width == 640 }.max { $0.range.maxFrameRate < $1.range.maxFrameRate } ?? best
-        func config(_ letter: String, _ choice: Candidate, hands: Int, note: String = "") -> CameraConfig {
-            CameraConfig(
-                label: "\(letter) \(choice.size.width)×\(choice.size.height)・最多 \(hands) 手\(note)",
-                format: choice.format, range: choice.range, maxHands: hands
-            )
-        }
-        configs = [
-            config("A", best, hands: 2), config("B", small, hands: 2), config("C", best, hands: 1),
-            config("D", best, hands: 2, note: "（重測 A）"),
-        ]
-        request.maximumHandCount = configs[activeConfig].maxHands
 
         session.beginConfiguration()
         let input = try AVCaptureDeviceInput(device: device)
@@ -119,7 +118,7 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         device.activeFormat = best.format
         device.activeVideoMinFrameDuration = best.range.minFrameDuration
         device.activeVideoMaxFrameDuration = best.range.minFrameDuration
-        // 保持鎖定到停止：鎖定期間 session 不會以預設 preset 覆蓋上面設定的格式與幀率，執行中也才能切換格式。
+        // 保持鎖定到停止：鎖定期間 session 不會以預設 preset 覆蓋上面設定的格式與幀率。
         queue.async { [self] in
             session.startRunning()
             clock = session.synchronizationClock ?? CMClockGetHostTimeClock()
@@ -134,13 +133,11 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         """
     }
 
-    /// 停止擷取，回傳所有紀錄與丟幀數。
-    func stop() -> (frames: [FrameRecord], dropped: Int) {
+    /// 停止擷取，回傳所有紀錄、丟幀數與推論忙碌時略過的幀數。
+    func stop() -> (frames: [FrameRecord], dropped: Int, skipped: Int) {
         session.stopRunning()
-        let device = self.device
-        // 等進行中的格式切換完成再解鎖；未鎖定時設定格式會丟出例外。
-        configQueue.sync { device?.unlockForConfiguration() }
-        return queue.sync { (frames, dropped) }
+        device?.unlockForConfiguration()
+        return queue.sync { (frames, dropped, skipped) }
     }
 
     /// 系統視訊效果（控制中心 → 視訊效果）會在影像交給 App 前加工，可能增加延遲；人物置中還會移動裁切範圍，
@@ -170,6 +167,7 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard !finished, let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let t = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+        let deliveryMs = (CMClockGetTime(clock).seconds - t) * 1000
 
         // 手連續入鏡 1 秒後才開始計時，在那之前都是準備階段。
         var phase = Phase.warmup
@@ -187,58 +185,77 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             lastPhase = phase
             emit(.phase(phase))
         }
-        apply(configIndex(phase: phase, remaining: remaining))
 
-        let begin = ProcessInfo.processInfo.systemUptime
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
-        try? handler.perform([request])
-        let inferenceMs = (ProcessInfo.processInfo.systemUptime - begin) * 1000
-        let latencyMs = (CMClockGetTime(clock).seconds - t) * 1000
-
-        let frame = FrameRecord(
-            t: t,
-            phase: phase,
-            width: CVPixelBufferGetWidth(pixelBuffer),
-            height: CVPixelBufferGetHeight(pixelBuffer),
-            latencyMs: latencyMs,
-            inferenceMs: inferenceMs,
-            hands: (request.results ?? []).compactMap { hand(from: $0) },
-            config: phase == .latency ? configs[activeConfig].label : nil
+        let latencyMode = mode(phase: phase, remaining: remaining)
+        let pending = Pending(
+            pixelBuffer: pixelBuffer, t: t, deliveryMs: deliveryMs, phase: phase, remaining: remaining,
+            config: latencyMode?.label
         )
-        frames.append(frame)
-        let result = probe.update(frame)
-        if startTime == nil {
-            handSince = result.raw == nil ? nil : handSince ?? t
-            if let handSince, t - handSince >= 1 { startTime = t }
+        if busy {
+            if waiting != nil { skipped += 1 }
+            waiting = pending
+        } else if latencyMode?.inline == true {
+            finish(pending, detect(pending))
+        } else {
+            startDetection(pending)
         }
-        emit(.frame(snapshot(frame, result: result, remaining: remaining)))
     }
 
     func captureOutput(_ output: AVCaptureOutput, didDrop sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         dropped += 1
     }
 
-    /// 延遲比較階段依時間輪流使用各設定，其餘階段用 A。
-    private func configIndex(phase: Phase, remaining: Double?) -> Int {
-        guard phase == .latency, let remaining else { return 0 }
-        let slot = phase.duration / Double(configs.count)
-        return min(configs.count - 1, Int((phase.duration - remaining) / slot))
+    /// 延遲比較階段依時間輪流使用各處理方式；其餘階段為 nil，用非同步。
+    private func mode(phase: Phase, remaining: Double?) -> (label: String, inline: Bool)? {
+        guard phase == .latency, let remaining else { return nil }
+        let slot = phase.duration / Double(modes.count)
+        return modes[min(modes.count - 1, Int((phase.duration - remaining) / slot))]
     }
 
-    private func apply(_ index: Int) {
-        guard index != activeConfig, let device else { return }
-        let previous = configs[activeConfig]
-        let next = configs[index]
-        activeConfig = index
-        request.maximumHandCount = next.maxHands
-        guard next.format != previous.format else { return }
-        let format = next.format
-        let range = next.range
-        configQueue.async {
-            device.activeFormat = format
-            device.activeVideoMinFrameDuration = range.minFrameDuration
-            device.activeVideoMaxFrameDuration = range.minFrameDuration
+    private func startDetection(_ pending: Pending) {
+        busy = true
+        workQueue.async { [self] in
+            let detection = detect(pending)
+            queue.async { [self] in
+                busy = false
+                finish(pending, detection)
+                if let next = waiting, !finished {
+                    waiting = nil
+                    startDetection(next)
+                }
+            }
         }
+    }
+
+    private func detect(_ pending: Pending) -> Detection {
+        let begin = ProcessInfo.processInfo.systemUptime
+        let handler = VNImageRequestHandler(cvPixelBuffer: pending.pixelBuffer, orientation: .up, options: [:])
+        try? handler.perform([request])
+        let inferenceMs = (ProcessInfo.processInfo.systemUptime - begin) * 1000
+        let latencyMs = (CMClockGetTime(clock).seconds - pending.t) * 1000
+        return ((request.results ?? []).compactMap { hand(from: $0) }, inferenceMs, latencyMs)
+    }
+
+    private func finish(_ pending: Pending, _ detection: Detection) {
+        guard !finished else { return }
+        let frame = FrameRecord(
+            t: pending.t,
+            phase: pending.phase,
+            width: CVPixelBufferGetWidth(pending.pixelBuffer),
+            height: CVPixelBufferGetHeight(pending.pixelBuffer),
+            latencyMs: detection.latencyMs,
+            inferenceMs: detection.inferenceMs,
+            hands: detection.hands,
+            config: pending.config,
+            deliveryMs: pending.deliveryMs
+        )
+        frames.append(frame)
+        let result = probe.update(frame)
+        if startTime == nil {
+            handSince = result.raw == nil ? nil : handSince ?? frame.t
+            if let handSince, frame.t - handSince >= 1 { startTime = frame.t }
+        }
+        emit(.frame(snapshot(frame, result: result, remaining: pending.remaining)))
     }
 
     private func hand(from observation: VNHumanHandPoseObservation) -> Hand? {

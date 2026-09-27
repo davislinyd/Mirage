@@ -111,6 +111,7 @@ private func makeHand(curled: Bool = false, thumbTip: Vec2 = Vec2(x: 0.62, y: 0.
         #expect(clicks([0.9, 0.2, 0.5, 0.9]) == [false, false, false, false])
         #expect(clicks([0.9, 0.2, 0.2], valid: [true, false, true]) == [false, false, false])
         #expect(clicks([0.9, 0.2, 0.2], valid: [true, true, false]) == [false, false, false])
+        #expect(clicks([0.9, 0.2, nil, 0.2]) == [false, false, false, false])
     }
 
     /// 以 30 fps 依序送入各段姿勢，回傳觸發喚醒的幀序號。
@@ -138,6 +139,11 @@ private func makeHand(curled: Bool = false, thumbTip: Vec2 = Vec2(x: 0.62, y: 0.
     @Test func wakeToleratesSingleNoisyFrame() {
         #expect(wakes([(.open, 0.2), (.other, 1.0 / 30), (.open, 0.2), (nil, 1.0 / 30), (.fist, 0.5)]) == [23])
         #expect(wakes([(.open, 0.5), (.fist, 0.2), (.other, 1.0 / 30), (.fist, 0.2)]) == [24])
+    }
+
+    @Test func wakeToleratesTransitionPoses() {
+        #expect(wakes([(.open, 0.5), (.other, 0.1), (.fist, 0.5)]) == [27])
+        #expect(wakes([(.open, 0.5), (.other, 0.4), (.fist, 0.5)]) == [])
     }
 }
 
@@ -208,7 +214,8 @@ private func makeHand(curled: Bool = false, thumbTip: Vec2 = Vec2(x: 0.62, y: 0.
             for i in 0..<120 {
                 frames.append(FrameRecord(
                     t: Double(index * 120 + i) / 30, phase: .latency, width: 1280, height: 720,
-                    latencyMs: config == "A" ? 100 : 60, inferenceMs: 20, hands: [makeHand()], config: config
+                    latencyMs: config == "A" ? 100 : 60, inferenceMs: 20, hands: [makeHand()], config: config,
+                    deliveryMs: config == "A" ? 80 : 40
                 ))
             }
         }
@@ -216,5 +223,6 @@ private func makeHand(curled: Bool = false, thumbTip: Vec2 = Vec2(x: 0.62, y: 0.
         #expect(reports.compactMap(\.config) == ["A", "B"])
         #expect(reports.map(\.frames) == [60, 60])
         #expect(reports.map(\.latencyP50) == [100, 60])
+        #expect(reports.map(\.deliveryP50) == [80, 40])
     }
 }

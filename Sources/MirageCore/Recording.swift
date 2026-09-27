@@ -28,7 +28,7 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
     public var instruction: String {
         switch self {
         case .warmup: "把右手舉到鏡頭前，掌心朝向鏡頭；入鏡 1 秒後開始"
-        case .latency: "伸出食指慢慢畫圈；相機會切換 4 種設定，骨架可能停頓一下"
+        case .latency: "伸出食指慢慢畫圈"
         case .still: "伸出食指，保持不動"
         case .move: "先慢後快，在舒適範圍內移動食指"
         case .pinch: "拇指與食指捏合再放開，剛好 10 次"
@@ -61,15 +61,17 @@ public struct FrameRecord: Codable, Sendable {
     public var height: Int
     /// 影格擷取 → 推論完成（ms）。
     public var latencyMs: Double
+    /// 影格擷取 → 送達 App（ms）。較早的紀錄沒有這個欄位。
+    public var deliveryMs: Double?
     /// Vision 推論耗時（ms）。
     public var inferenceMs: Double
     public var hands: [Hand]
-    /// 延遲比較階段的相機設定代號；其他階段為 nil。
+    /// 延遲比較階段的處理方式代號；其他階段為 nil。
     public var config: String?
 
     public init(
         t: Double, phase: Phase, width: Int, height: Int, latencyMs: Double, inferenceMs: Double, hands: [Hand],
-        config: String? = nil
+        config: String? = nil, deliveryMs: Double? = nil
     ) {
         self.t = t
         self.phase = phase
@@ -79,6 +81,7 @@ public struct FrameRecord: Codable, Sendable {
         self.inferenceMs = inferenceMs
         self.hands = hands
         self.config = config
+        self.deliveryMs = deliveryMs
     }
 
     /// 主要操作手：優先右手，其次平均信心值最高者。

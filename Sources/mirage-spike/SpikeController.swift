@@ -60,10 +60,11 @@ final class SpikeController: NSObject, NSApplicationDelegate {
     private func writeResults() {
         guard !resultsWritten, let capture else { return }
         resultsWritten = true
-        let (frames, dropped) = capture.stop()
+        let (frames, dropped, skipped) = capture.stop()
         let summary = Summary.text(
             camera: camera,
             dropped: dropped,
+            skipped: skipped,
             reports: SpikeAnalysis.report(frames: frames, mapper: mapper)
         )
         print(summary)

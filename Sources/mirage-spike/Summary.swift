@@ -2,13 +2,17 @@ import Foundation
 import MirageCore
 
 enum Summary {
-    static func text(camera: String, dropped: Int, reports: [PhaseReport]) -> String {
+    static func text(camera: String, dropped: Int, skipped: Int, reports: [PhaseReport]) -> String {
         let pinch = PinchDetector()
-        var lines = ["", "===== Mirage M0.1 結果 =====", camera, "丟幀：\(dropped)（推論來不及而被丟棄的影格）"]
+        var lines = [
+            "", "===== Mirage M0.2 結果 =====", camera,
+            "丟幀：\(dropped)（同步推論來不及，被相機丟棄的影格）",
+            "略過：\(skipped)（非同步推論忙碌時，被較新影格取代的影格）",
+        ]
         for report in reports where report.phase != .warmup {
             lines.append("")
             lines.append("[\(report.phase.title)\(report.config.map { " \($0)" } ?? "")] \(report.frames) 幀・\(number(report.fps)) fps・偵測率 \(percent(report.detectionRate))・判定為右手 \(percent(report.rightHandRate))")
-            lines.append("  延遲 p50/p95：\(number(report.latencyP50)) / \(number(report.latencyP95)) ms（其中推論 \(number(report.inferenceP50)) / \(number(report.inferenceP95)) ms）")
+            lines.append("  延遲 p50/p95：\(number(report.latencyP50)) / \(number(report.latencyP95)) ms（其中送達 \(number(report.deliveryP50)) / \(number(report.deliveryP95))、推論 \(number(report.inferenceP50)) / \(number(report.inferenceP95)) ms）")
             switch report.phase {
             case .still:
                 lines.append("  逐幀跳動 p50/p95（螢幕 pt）：原始 \(number(report.jitterRaw?.p50)) / \(number(report.jitterRaw?.p95)) → 濾波後 \(number(report.jitterFiltered?.p50)) / \(number(report.jitterFiltered?.p95))")

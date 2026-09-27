@@ -1,7 +1,7 @@
-/// 單一階段（延遲比較階段則是單一相機設定）的量測結果。
+/// 單一階段（延遲比較階段則是單一處理方式）的量測結果。
 public struct PhaseReport: Sendable {
     public let phase: Phase
-    /// 延遲比較階段的相機設定代號。
+    /// 延遲比較階段的處理方式代號。
     public let config: String?
     public var frames = 0
     public var fps = 0.0
@@ -11,6 +11,9 @@ public struct PhaseReport: Sendable {
     public var rightHandRate = 0.0
     public var latencyP50 = 0.0
     public var latencyP95 = 0.0
+    /// 影格擷取 → 送達 App 的 p50 / p95；紀錄沒有這個欄位時為 nil。
+    public var deliveryP50: Double?
+    public var deliveryP95: Double?
     public var inferenceP50 = 0.0
     public var inferenceP95 = 0.0
     /// 靜止時游標逐幀位移（螢幕 pt）的 p50 / p95。
@@ -30,10 +33,10 @@ public struct PhaseReport: Sendable {
 }
 
 public enum SpikeAnalysis {
-    /// 切換相機設定後略過的秒數：曝光與擷取管線需要時間穩定。
+    /// 切換處理方式後略過的秒數：前一種方式造成的延遲需要時間消退。
     static let settle = 2.0
 
-    /// 依錄製順序重跑濾波與偵測器（與即時畫面相同邏輯），再逐階段彙整；延遲比較階段依相機設定分開彙整。
+    /// 依錄製順序重跑濾波與偵測器（與即時畫面相同邏輯），再逐階段彙整；延遲比較階段依處理方式分開彙整。
     public static func report(frames: [FrameRecord], mapper: ScreenMapper) -> [PhaseReport] {
         var probe = GestureProbe(mapper: mapper)
         var groups: [[Sample]] = []
@@ -53,7 +56,7 @@ public enum SpikeAnalysis {
         let result: ProbeResult
     }
 
-    /// `group` 為同一階段、同一相機設定的連續樣本，至少一個。
+    /// `group` 為同一階段、同一處理方式的連續樣本，至少一個。
     static func summarize(_ group: [Sample]) -> PhaseReport {
         let phase = group[0].frame.phase
         var report = PhaseReport(phase: phase, config: group[0].frame.config)
@@ -73,6 +76,9 @@ public enum SpikeAnalysis {
         let inferences = samples.map { $0.frame.inferenceMs }
         report.latencyP50 = percentile(latencies, 0.5) ?? 0
         report.latencyP95 = percentile(latencies, 0.95) ?? 0
+        let deliveries = samples.compactMap { $0.frame.deliveryMs }
+        report.deliveryP50 = percentile(deliveries, 0.5)
+        report.deliveryP95 = percentile(deliveries, 0.95)
         report.inferenceP50 = percentile(inferences, 0.5) ?? 0
         report.inferenceP95 = percentile(inferences, 0.95) ?? 0
 
