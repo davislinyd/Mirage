@@ -14,6 +14,10 @@ final class CalibrationPanel: NSObject, NSWindowDelegate {
         )
         panel.title = "Mirage 校準"
         panel.level = .floating
+        // 選單列 App 平常不在前景：NSPanel 預設在 App 非作用中時隱藏，而 macOS 14 起 App 不能自行切到前景。
+        // 使用者可能正在全螢幕的 App 裡，所以也允許顯示在全螢幕空間。
+        panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isReleasedWhenClosed = false
         panel.delegate = self
         label.frame = NSRect(x: 20, y: 20, width: 380, height: 90)
@@ -36,8 +40,7 @@ final class CalibrationPanel: NSObject, NSWindowDelegate {
         label.stringValue = lines.joined(separator: "\n")
         if !panel.isVisible {
             panel.center()
-            panel.makeKeyAndOrderFront(nil)
-            NSApp.activate()
+            panel.orderFrontRegardless()
         }
     }
 
