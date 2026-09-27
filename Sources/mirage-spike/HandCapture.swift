@@ -140,7 +140,7 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         return queue.sync { (frames, dropped, skipped) }
     }
 
-    /// 系統視訊效果（控制中心 → 視訊效果）會在影像交給 App 前加工，可能增加延遲；人物置中還會移動裁切範圍，
+    /// 系統視訊效果（選單列的 Video 選單）會在影像交給 App 前加工，可能增加延遲；人物置中還會移動裁切範圍，
     /// 讓手的座標跟著跳。人物置中可由 App 接管並關閉，其他效果只能由使用者關閉。
     private static func disableVideoEffects() -> String {
         let effects = [
@@ -159,7 +159,7 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         ]
         let userControlled = effects.dropFirst().filter { $0.1 }.map { $0.0 }
         if !userControlled.isEmpty {
-            lines.append("建議先到控制中心 → 視訊效果關閉：\(userControlled.joined(separator: "、"))，再重新執行")
+            lines.append("建議趁本工具使用鏡頭時，從選單列的 Video 選單關閉：\(userControlled.joined(separator: "、"))，再重新執行（設定依 App 分開記憶）")
         }
         return lines.joined(separator: "\n")
     }
