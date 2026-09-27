@@ -112,6 +112,7 @@ private func makeHand(curled: Bool = false, thumbTip: Vec2 = Vec2(x: 0.62, y: 0.
         #expect(clicks([0.9, 0.2, 0.2], valid: [true, false, true]) == [false, false, false])
         #expect(clicks([0.9, 0.2, 0.2], valid: [true, true, false]) == [false, false, false])
         #expect(clicks([0.9, 0.2, nil, 0.2]) == [false, false, false, false])
+        #expect(clicks([nil, 0.2, 0.2, 0.9, 0.2, 0.2]) == [false, false, false, false, false, true])
     }
 
     /// 以 30 fps 依序送入各段姿勢，回傳觸發喚醒的幀序號。
@@ -148,15 +149,15 @@ private func makeHand(curled: Bool = false, thumbTip: Vec2 = Vec2(x: 0.62, y: 0.
 }
 
 @Suite struct GestureProbeTests {
-    /// 靜止階段以 1280×720 建立掌寬基準，再以指定解析度送入張手、捏合、捏合。
+    /// 靜止階段以 1280×720 建立掌寬基準，再以指定解析度送入張手、捏合、`confirm`（預設同樣是捏合）。
     /// 解析度減半時量到的掌寬只剩基準的一半，等同側手或離很遠的手。
-    private func clicks(width: Int, height: Int) -> Int {
+    private func clicks(width: Int = 1280, height: Int = 720, confirm: Hand? = nil) -> Int {
         var probe = GestureProbe(mapper: ScreenMapper(screenWidth: 1440, screenHeight: 900))
         let still = (0..<30).map { i in
             FrameRecord(t: Double(i) / 30, phase: .still, width: 1280, height: 720, latencyMs: 0, inferenceMs: 0, hands: [makeHand()])
         }
         let pinched = makeHand(thumbTip: Vec2(x: 0.54, y: 0.52))
-        let pinch = [makeHand(), pinched, pinched].enumerated().map { i, hand in
+        let pinch = [makeHand(), pinched, confirm ?? pinched].enumerated().map { i, hand in
             FrameRecord(t: 1 + Double(i) / 30, phase: .pinch, width: width, height: height, latencyMs: 0, inferenceMs: 0, hands: [hand])
         }
         var clicks = 0
@@ -169,6 +170,12 @@ private func makeHand(curled: Bool = false, thumbTip: Vec2 = Vec2(x: 0.62, y: 0.
     @Test func clickRequiresHandNearBaselineSize() {
         #expect(clicks(width: 1280, height: 720) == 1)
         #expect(clicks(width: 640, height: 360) == 0)
+    }
+
+    @Test func reusesRecentPalmWidthWhileKnuckleIsHidden() {
+        var hidden = makeHand(thumbTip: Vec2(x: 0.54, y: 0.52))
+        hidden.joints[Joint.indexMCP.rawValue].c = 0.1
+        #expect(clicks(confirm: hidden) == 1)
     }
 }
 

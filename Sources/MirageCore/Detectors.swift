@@ -25,10 +25,13 @@ public struct PinchDetector: Sendable {
 }
 
 /// 點擊用的捏合：開始捏合後下一幀實際量到仍捏著，且兩幀都通過呼叫端的閘門（`valid`）才算一次點擊，
-/// 單幀的比例誤判不會觸發。代價是多等一幀（約 33 ms）。
+/// 單幀的比例誤判不會觸發。代價是多等一幀（約 33 ms）。開始捏合的前一幀必須量得到比例：手剛入鏡或追蹤
+/// 剛恢復時沒看到手指由張開到併攏，三份錄影的誤點都發生在這時。
 public struct PinchClickDetector: Sendable {
     private var pinch = PinchDetector()
     private var pending = false
+    /// 上一幀量得到捏合比例。
+    private var measured = false
 
     public var isPinched: Bool { pinch.isPinched }
 
@@ -38,7 +41,8 @@ public struct PinchClickDetector: Sendable {
     public mutating func update(ratio: Double?, valid: Bool) -> Bool {
         let started = pinch.update(ratio: ratio)
         let confirmed = pending && ratio != nil && pinch.isPinched && valid
-        pending = started && valid
+        pending = started && valid && measured
+        measured = ratio != nil
         return confirmed
     }
 }

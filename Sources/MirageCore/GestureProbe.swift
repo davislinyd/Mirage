@@ -16,6 +16,9 @@ public struct GestureProbe: Sendable {
     public var resetGap = 0.2
     /// 掌寬須在基準的此範圍內才觸發手勢。側手、離太遠或太近的手，量到的掌寬會明顯偏離。
     public var palmRange = 0.6...1.4
+    /// 量不到掌寬時，沿用此秒數內最近一次量到的值。捏合時拇指常擋住食指根部關節，指尖卻清楚可見；
+    /// 手與鏡頭的距離在這麼短的時間內幾乎不變。
+    public var palmHold = 0.2
     /// 靜止階段掌寬的中位數，作為使用者手部大小的基準（M1 改由校準取得）。
     public private(set) var baselinePalm: Double?
     private let mapper: ScreenMapper
@@ -23,6 +26,7 @@ public struct GestureProbe: Sendable {
     private var click = PinchClickDetector()
     private var wake = WakeDetector()
     private var lastSeen: Double?
+    private var lastPalm: (width: Double, t: Double)?
     private var stillPalms: [Double] = []
 
     public init(mapper: ScreenMapper) {
@@ -32,9 +36,11 @@ public struct GestureProbe: Sendable {
     public mutating func update(_ frame: FrameRecord) -> ProbeResult {
         var result = ProbeResult()
         let geometry = frame.primaryHand.map { HandGeometry(hand: $0, width: frame.width, height: frame.height) }
-        let palm = geometry?.palmWidth
+        let measuredPalm = geometry?.palmWidth
+        if let measuredPalm { lastPalm = (measuredPalm, frame.t) }
+        let palm = measuredPalm ?? lastPalm.flatMap { frame.t - $0.t <= palmHold ? $0.width : nil }
         if frame.phase == .still {
-            if let palm { stillPalms.append(palm) }
+            if let measuredPalm { stillPalms.append(measuredPalm) }
         } else if baselinePalm == nil {
             baselinePalm = SpikeAnalysis.percentile(stillPalms, 0.5)
         }
@@ -49,7 +55,7 @@ public struct GestureProbe: Sendable {
                 result.filtered = filter(raw, at: frame.t)
             }
             result.isRight = geometry.hand.chirality == .right
-            result.pinchRatio = geometry.pinchRatio
+            if let gap = geometry.distance(.thumbTip, .indexTip), let palm, palm > 0 { result.pinchRatio = gap / palm }
         }
         // 食指彎曲代表握拳或拿東西，不是捏合；關節不確定時不擋，以免漏掉真的捏合。
         result.clicked = click.update(ratio: result.pinchRatio, valid: sized && geometry?.indexCurled != true)
