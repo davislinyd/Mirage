@@ -3,3 +3,4 @@
 .swiftpm/
 recordings/
 .ai/
+build/

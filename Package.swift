@@ -7,6 +7,7 @@ let package = Package(
     targets: [
         .target(name: "MirageCore"),
         .executableTarget(name: "mirage-spike", dependencies: ["MirageCore"]),
+        .executableTarget(name: "Mirage", dependencies: ["MirageCore"]),
         .testTarget(name: "MirageCoreTests", dependencies: ["MirageCore"]),
     ]
 )
