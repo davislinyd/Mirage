@@ -120,6 +120,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .state(let state):
             self.state = state
             halo.show(state)
+        case .scrolling(let scrolling):
+            halo.showScrolling(scrolling)
         case .calibration(let progress):
             // 取消後仍可能收到幾幀已排隊的進度。
             guard calibrating else { return }

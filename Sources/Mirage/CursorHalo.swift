@@ -2,12 +2,15 @@ import AppKit
 import MirageCore
 import QuartzCore
 
-/// 游標周圍的光圈，讓使用者知道手勢狀態：喚醒後閃爍（手勢已辨識，伸出食指開始），控制中持續發光。
+/// 游標周圍的光圈，讓使用者知道手勢狀態：喚醒後閃爍（手勢已辨識，伸出食指開始），控制中持續發光，兩指捲動時
+/// 光圈裡有兩根手指，往會捲動的那一下的方向滑動。
 /// 是滑鼠事件穿透的透明小視窗，顯示期間每次螢幕更新都移到游標位置，所以跟著游標，不論游標是誰移動的。
 @MainActor
 final class CursorHalo: NSObject {
     private static let size = 64.0
     private let ring = CALayer()
+    /// 游標尖端上方的兩根手指，箭頭在尖端右下方，不會擋住。
+    private let fingers = CALayer()
     private lazy var window: NSWindow = {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: Self.size, height: Self.size), styleMask: .borderless, backing: .buffered, defer: false
@@ -30,6 +33,16 @@ final class CursorHalo: NSObject {
         ring.shadowRadius = 6
         ring.shadowOffset = .zero
         view.layer?.addSublayer(ring)
+        fingers.frame = CGRect(x: 23, y: 33, width: 18, height: 12)
+        for x in [0.0, 11.0] {
+            let finger = CALayer()
+            finger.frame = CGRect(x: x, y: 0, width: 7, height: 12)
+            finger.cornerRadius = 3.5
+            finger.backgroundColor = NSColor.systemCyan.cgColor
+            fingers.addSublayer(finger)
+        }
+        fingers.isHidden = true
+        view.layer?.addSublayer(fingers)
         window.contentView = view
         return window
     }()
@@ -41,6 +54,7 @@ final class CursorHalo: NSObject {
 
     func show(_ state: ControlState) {
         ring.removeAllAnimations()
+        showScrolling(nil)
         switch state {
         case .idle:
             link.isPaused = true
@@ -61,6 +75,23 @@ final class CursorHalo: NSObject {
         follow()
         link.isPaused = false
         window.orderFrontRegardless()
+    }
+
+    func showScrolling(_ stroke: Scroller.Stroke?) {
+        fingers.removeAllAnimations()
+        fingers.isHidden = stroke == nil
+        guard let stroke else { return }
+        // 只往一個方向滑並淡出，再從頭開始，才看得出方向：彎手指捲動時往下，伸直捲動時往上。
+        let slide = CABasicAnimation(keyPath: "position.y")
+        slide.byValue = stroke == .bend ? -4.0 : 4.0
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 1
+        fade.toValue = 0.2
+        let group = CAAnimationGroup()
+        group.animations = [slide, fade]
+        group.duration = 0.5
+        group.repeatCount = .infinity
+        fingers.add(group, forKey: "slide")
     }
 
     @objc private func follow() {

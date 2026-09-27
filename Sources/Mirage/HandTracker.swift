@@ -8,6 +8,8 @@ import MirageCore
 final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     enum Event: Sendable {
         case state(ControlState)
+        /// 兩指捲動開始、結束，或換成另一端起點。
+        case scrolling(Scroller.Stroke?)
         case calibration(CalibrationSession.Progress)
     }
 
@@ -58,6 +60,7 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private var waiting: Pending?
     private var mode = Mode.waiting
     private var state = ControlState.idle
+    private var scrolling: Scroller.Stroke?
     /// 已送出左鍵按下、還沒送出放開。
     private var pressed = false
 
@@ -198,6 +201,7 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             }
             if let scroll = output.scroll { send(scroll: scroll) }
             publish(output.state)
+            publish(scrolling: output.scrolling)
         }
     }
 
@@ -246,7 +250,8 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         event?.post(tap: .cghidEventTap)
     }
 
-    /// 像素單位的連續捲動，同觸控板。內容往上等於滾輪往下，所以正負相反。
+    /// 像素單位的連續捲動，同觸控板。內容跟著指尖移動，不看系統的「自然捲動」設定：指尖往上時內容往上，等於滾輪
+    /// 往下，所以正負相反。合成的捲動事件不會再套用這個設定（推論，待實機確認）。
     private func send(scroll: Double) {
         let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: Int32(-scroll), wheel2: 0, wheel3: 0)
         event?.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
@@ -267,11 +272,18 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         return Hand(chirality: chirality, joints: joints)
     }
 
-    /// 狀態改變時通知主執行緒。
+    /// 狀態改變時通知主執行緒。光圈換狀態時會收起兩指提示。
     private func publish(_ state: ControlState) {
         guard state != self.state else { return }
         self.state = state
+        scrolling = nil
         emit(.state(state))
+    }
+
+    private func publish(scrolling: Scroller.Stroke?) {
+        guard scrolling != self.scrolling else { return }
+        self.scrolling = scrolling
+        emit(.scrolling(scrolling))
     }
 
     private func emit(_ event: Event) {

@@ -63,10 +63,12 @@ public struct CursorController: Sendable {
         public var state: ControlState
         public var cursor: Vec2?
         public var button: PinchClicker.Button?
-        /// 這一幀要捲動的 pt，內容往上為正。
+        /// 這一幀要捲動的 pt，指尖往上為正，內容跟著指尖移動。
         public var scroll: Double?
         /// 右鍵單擊。
         public var rightClick = false
+        /// 兩指捲動中（游標停住）時為會捲動的那一下，否則為 nil。
+        public var scrolling: Scroller.Stroke?
     }
 
     public let calibration: Calibration
@@ -82,6 +84,8 @@ public struct CursorController: Sendable {
     public var reachMargin = 0.5
     /// 依速度往前外插的秒數，補償部分相機延遲。三份錄影中 33 ms 讓移動時的誤差少約 1/4，靜止抖動 p50 只多約 0.5 pt。
     public var lead = 0.033
+    /// 開始捲動時，游標回到此秒數內最後一次只有食指指向時的位置：伸直中指時食指尖也會跟著動。
+    public var pointMemory = 0.5
 
     private var machine = ControlStateMachine()
     private var wake = WakeDetector()
@@ -89,8 +93,14 @@ public struct CursorController: Sendable {
     private var scroller = Scroller()
     /// 兩指捲動時的拇指–食指捏合 = 右鍵。
     private var secondary = PinchClickDetector()
-    /// 上一幀輸出的游標：捲動時游標停在這裡。
+    /// 上一幀輸出的游標。
     private var lastCursor: Vec2?
+    /// 最後一次只有食指指向時輸出的游標。
+    private var pointed: (cursor: Vec2, t: Double)?
+    /// 捲動時游標停住的位置。
+    private var held: Vec2?
+    /// 最近一次兩指伸直時，食指尖減食指根部（正規化座標）。
+    private var reach: Vec2?
     private var filter = OneEuroFilter2D()
     private var velocity = Vec2(x: 0, y: 0)
     private var last: (point: Vec2, t: Double)?
@@ -112,7 +122,14 @@ public struct CursorController: Sendable {
         let tip = sized ? geometry?.normalized(.indexTip) : nil
         let inside = tip.map { isInside($0) } ?? false
         let pointing = inside && geometry?.isPointing(palmWidth: palm ?? 0) == true
-        let state = machine.update(woke: woke, pointing: pointing, visible: tip != nil, inside: inside, at: t)
+        let knuckle = sized ? geometry?.normalized(.indexMCP) : nil
+        let twoFingers = inside && !clicker.isPressed && geometry?.isPointing(palmWidth: palm ?? 0, fingers: 2) == true
+        if twoFingers, let tip, let knuckle { reach = Vec2(x: tip.x - knuckle.x, y: tip.y - knuckle.y) }
+        // 捲動中彎手指時指尖會離開操作範圍，但手沒有離開：改用食指根部加上兩指伸直時的指尖位移判斷。
+        let placed = scroller.isScrolling ? knuckle.flatMap { k in reach.map { Vec2(x: k.x + $0.x, y: k.y + $0.y) } } : tip
+        let state = machine.update(
+            woke: woke, pointing: pointing, visible: tip != nil, inside: placed.map { isInside($0) } ?? false, at: t
+        )
         var cursor: Vec2?
         if let tip {
             if let last, t - last.t > resetGap {
@@ -131,29 +148,34 @@ public struct CursorController: Sendable {
         guard state == .active else {
             clicker = PinchClicker()
             scroller = Scroller()
+            held = nil
             return Output(state: state, cursor: nil)
         }
-        let twoFingers = inside && !clicker.isPressed && geometry?.isPointing(palmWidth: palm ?? 0, fingers: 2) == true
-        // 與游標同比例、不限制在螢幕內，手超出校準範圍時仍能捲動。
-        let knuckle = sized ? geometry?.normalized(.indexMCP) : nil
-        let y = knuckle.map { ($0.y - calibration.minY) / (calibration.maxY - calibration.minY) * screenHeight }
-        let scroll = scroller.update(twoFingers: twoFingers, pointing: pointing, y: y, at: t)
+        // 食指尖比指根高出幾個掌寬：彎手指捲動，整隻手移動時不變。
+        var rise: Double?
+        if let tip, let palm, let knuckle {
+            rise = (tip.y - knuckle.y) * Double(height) / palm
+        }
+        let scroll = scroller.update(twoFingers: twoFingers, pointing: pointing, height: rise, at: t)
         // 用沿用的掌寬：捏合時拇指常擋住食指根部。
         var ratio: Double?
         if sized, let palm, let gap = geometry?.distance(.thumbTip, .indexTip) { ratio = gap / palm }
         if scroller.isScrolling {
             clicker = PinchClicker()
-            // 同觸控板的兩指點按。
-            let rightClick = secondary.update(ratio: ratio, valid: sized)
-            return Output(state: state, cursor: lastCursor, scroll: scroll, rightClick: rightClick)
+            if held == nil { held = pointed.flatMap { t - $0.t <= pointMemory ? $0.cursor : nil } ?? lastCursor }
+            // 同觸控板的兩指點按。彎成拳頭時拇指也會貼著食指，但食指尖低於 `bent`；量不到時不擋。
+            let rightClick = secondary.update(ratio: ratio, valid: sized && (rise ?? .infinity) >= scroller.bent)
+            return Output(state: state, cursor: held, scroll: scroll, rightClick: rightClick, scrolling: scroller.stroke)
         }
         secondary = PinchClickDetector()
+        held = nil
         // 食指彎曲代表握拳或拿東西，不是捏合；關節不確定時不擋，以免漏掉真的捏合。
         let click = clicker.update(
             cursor: cursor, ratio: ratio, anchor: sized ? geometry?.normalized(.indexMCP) : nil,
             valid: sized && geometry?.indexCurled != true, at: t
         )
         lastCursor = click.cursor
+        if pointing, let shown = click.cursor { pointed = (shown, t) }
         return Output(state: state, cursor: click.cursor, button: click.button, scroll: scroll)
     }
 
