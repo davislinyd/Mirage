@@ -193,6 +193,7 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             mode = .controlling(controller)
             if output.state != .active { release() }
             if let cursor = output.cursor { post(output.button, at: cursor) }
+            if let scroll = output.scroll { send(scroll: scroll) }
             publish(output.state)
         }
     }
@@ -225,6 +226,13 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             event?.setIntegerValueField(.mouseEventClickState, value: 1)
             pressed = type == .leftMouseDown
         }
+        event?.post(tap: .cghidEventTap)
+    }
+
+    /// 像素單位的連續捲動，同觸控板。內容往上等於滾輪往下，所以正負相反。
+    private func send(scroll: Double) {
+        let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: Int32(-scroll), wheel2: 0, wheel3: 0)
+        event?.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
         event?.post(tap: .cghidEventTap)
     }
 

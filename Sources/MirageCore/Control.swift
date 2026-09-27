@@ -57,12 +57,14 @@ public struct ControlStateMachine: Sendable {
     }
 }
 
-/// 主要手 → 啟用狀態 → 游標位置（螢幕 pt，原點左下）與左鍵。只有 Active 時輸出游標與左鍵。
+/// 主要手 → 啟用狀態 → 游標位置（螢幕 pt，原點左下）、左鍵與捲動。只有 Active 時輸出游標、左鍵與捲動。
 public struct CursorController: Sendable {
     public struct Output: Sendable {
         public var state: ControlState
         public var cursor: Vec2?
         public var button: PinchClicker.Button?
+        /// 這一幀要捲動的 pt，內容往上為正。
+        public var scroll: Double?
     }
 
     public let calibration: Calibration
@@ -82,6 +84,9 @@ public struct CursorController: Sendable {
     private var machine = ControlStateMachine()
     private var wake = WakeDetector()
     private var clicker = PinchClicker()
+    private var scroller = Scroller()
+    /// 上一幀輸出的游標：捲動時游標停在這裡。
+    private var lastCursor: Vec2?
     private var filter = OneEuroFilter2D()
     private var velocity = Vec2(x: 0, y: 0)
     private var last: (point: Vec2, t: Double)?
@@ -121,7 +126,17 @@ public struct CursorController: Sendable {
         }
         guard state == .active else {
             clicker = PinchClicker()
+            scroller = Scroller()
             return Output(state: state, cursor: nil)
+        }
+        let twoFingers = inside && !clicker.isPressed && geometry?.isPointing(palmWidth: palm ?? 0, fingers: 2) == true
+        // 與游標同比例、不限制在螢幕內，手超出校準範圍時仍能捲動。
+        let knuckle = sized ? geometry?.normalized(.indexMCP) : nil
+        let height = knuckle.map { ($0.y - calibration.minY) / (calibration.maxY - calibration.minY) * screenHeight }
+        let scroll = scroller.update(twoFingers: twoFingers, pointing: pointing, y: height, at: t)
+        if scroller.isEngaged {
+            clicker = PinchClicker()
+            return Output(state: state, cursor: lastCursor, scroll: scroll)
         }
         // 用沿用的掌寬：捏合時拇指常擋住食指根部。
         var ratio: Double?
@@ -131,7 +146,8 @@ public struct CursorController: Sendable {
             cursor: cursor, ratio: ratio, anchor: sized ? geometry?.normalized(.indexMCP) : nil,
             valid: sized && geometry?.indexCurled != true, at: t
         )
-        return Output(state: state, cursor: click.cursor, button: click.button)
+        lastCursor = click.cursor
+        return Output(state: state, cursor: click.cursor, button: click.button, scroll: scroll)
     }
 
     /// 快捷鍵、螢幕鎖定等外部原因停用：回到 Idle，須重新喚醒。

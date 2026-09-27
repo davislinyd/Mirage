@@ -106,6 +106,10 @@ private func makeHand(
         #expect(pointing(noWrist) == true)
         #expect(pointing(makeHand()) == false)
         #expect(pointing(makeHand(curled: true)) == false)
+        var twoFingers = makeHand(pointing: true)
+        twoFingers.joints[Joint.middleTip.rawValue].y = 0.52
+        #expect(HandGeometry(hand: twoFingers, width: 1280, height: 720).isPointing(palmWidth: 153.6, fingers: 2) == true)
+        #expect(pointing(twoFingers) == false)
     }
 }
 
@@ -347,6 +351,21 @@ private func makeHand(
         #expect(output.state == .idle)
     }
 
+    @Test func twoFingersScrollWhileCursorHolds() throws {
+        // 指著 (0.5, 0.5) 後伸直中指，手往上移 0.05（螢幕上 125 pt）。
+        var twoFingers = pointing(0.5, 0.55)
+        twoFingers.joints[Joint.middleDIP.rawValue].y += 0.09
+        twoFingers.joints[Joint.middleTip.rawValue].y += 0.19
+        var start = twoFingers
+        for i in start.joints.indices { start.joints[i].y -= 0.05 }
+        let scrolling = outputs(woken((pointing(0.5, 0.5), 1), (start, 0.3), (twoFingers, 1))).filter { $0.scroll != nil }
+        let total = scrolling.reduce(0) { $0 + ($1.scroll ?? 0) }
+        let cursor = try #require(scrolling.first?.cursor)
+        #expect(total > 240 && total <= 250)
+        #expect(abs(cursor.x - 500) < 1 && abs(cursor.y - 250) < 1)
+        #expect(scrolling.allSatisfy { $0.cursor == cursor && $0.button == nil })
+    }
+
     @Test func pinchClicksOnlyWhileActive() {
         let pinch: [Segment] = [(pointing(0.5, 0.5), 1), (pointing(0.5, 0.5, pinched: true), 0.2), (pointing(0.5, 0.5), 0.5)]
         #expect(outputs(woken() + pinch).compactMap(\.button) == [.down, .up])
@@ -406,6 +425,43 @@ private func makeHand(
     @Test func releasesWhenHandIsLost() {
         let outputs = run(pointing + [(500, 200, 0.7), (500, 100, 0.2), (500, 100, 0.15)] + [Frame](repeating: nil, count: 12))
         #expect(outputs.compactMap(\.button) == [.down, .up])
+    }
+}
+
+@Suite struct ScrollerTests {
+    /// 以 30 fps 依序送入各段：是否兩指伸直（否則只有食指）、秒數、手往上移的速度（pt/s）。回傳每一幀的捲動距離與是否在捲動中。
+    private func run(_ segments: [(twoFingers: Bool, seconds: Double, speed: Double)]) -> [(scroll: Double, engaged: Bool)] {
+        var scroller = Scroller()
+        var frames: [(scroll: Double, engaged: Bool)] = []
+        var y = 500.0
+        for segment in segments {
+            for _ in 0..<Int((segment.seconds * 30).rounded()) {
+                y += segment.speed / 30
+                let scroll = scroller.update(twoFingers: segment.twoFingers, pointing: !segment.twoFingers, y: y, at: Double(frames.count) / 30)
+                frames.append((scroll ?? 0, scroller.isEngaged))
+            }
+        }
+        return frames
+    }
+
+    @Test func scrollFollowsHand() {
+        // 往上移 150 pt 後停住，再收回中指：捲動 150 × 2，沒有慣性。
+        let frames = run([(true, 0.2, 0), (true, 0.5, 300), (true, 0.2, 0), (false, 0.2, 0)])
+        #expect(abs(frames.reduce(0) { $0 + $1.scroll } - 300) < 10)
+        #expect(frames.last?.engaged == false)
+    }
+
+    @Test func flickKeepsScrolling() {
+        // 往上移動中收回中指：放開後繼續捲動並減速，最後停止。
+        let frames = run([(true, 0.2, 0), (true, 0.3, 600), (false, 3, 0)])
+        #expect(frames.dropFirst(15).reduce(0) { $0 + $1.scroll } > 400)
+        #expect(frames[20].engaged)
+        #expect(frames.last?.engaged == false)
+    }
+
+    @Test func briefTwoFingersDoNotScroll() {
+        let frames = run([(false, 0.2, 100), (true, 2.0 / 30, 100), (false, 0.2, 100)])
+        #expect(frames.allSatisfy { $0.scroll == 0 && !$0.engaged })
     }
 }
 

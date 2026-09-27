@@ -61,15 +61,17 @@ public struct HandGeometry: Sendable {
         }
     }
 
-    /// 食指指向（手指朝上）：食指尖比食指根部高出至少 `up` 個掌寬，其餘三指指尖不比各自根部高出 `down` 個掌寬。
-    /// 不用手腕：手靠近鏡頭時手腕常在畫面外。`palmWidth` 由呼叫端提供，可沿用前幾幀量到的值。
-    public func isPointing(palmWidth palm: Double, up: Double = 0.4, down: Double = 0.2) -> Bool? {
+    /// 指向（手指朝上）：從食指起的 `fingers` 指（1 = 食指，2 = 食指與中指）指尖比各自根部高出至少 `up` 個掌寬，
+    /// 其餘手指指尖不比各自根部高出 `down` 個掌寬。不用手腕：手靠近鏡頭時手腕常在畫面外。`palmWidth` 由呼叫端提供，
+    /// 可沿用前幾幀量到的值。
+    public func isPointing(palmWidth palm: Double, fingers: Int = 1, up: Double = 0.4, down: Double = 0.2) -> Bool? {
         func rise(_ tip: Joint, _ mcp: Joint) -> Double? {
             guard let t = normalized(tip), let m = normalized(mcp) else { return nil }
             return (t.y - m.y) * height / palm
         }
         guard palm > 0, let index = rise(.indexTip, .indexMCP), let middle = rise(.middleTip, .middleMCP),
               let ring = rise(.ringTip, .ringMCP), let little = rise(.littleTip, .littleMCP) else { return nil }
-        return index >= up && middle <= down && ring <= down && little <= down
+        let rises = [index, middle, ring, little]
+        return rises.prefix(fingers).allSatisfy { $0 >= up } && rises.dropFirst(fingers).allSatisfy { $0 <= down }
     }
 }
