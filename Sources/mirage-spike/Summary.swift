@@ -4,23 +4,23 @@ import MirageCore
 enum Summary {
     static func text(camera: String, dropped: Int, reports: [PhaseReport]) -> String {
         let pinch = PinchDetector()
-        var lines = ["", "===== Mirage M0 結果 =====", camera, "丟幀：\(dropped)（推論來不及而被丟棄的影格）"]
+        var lines = ["", "===== Mirage M0.1 結果 =====", camera, "丟幀：\(dropped)（推論來不及而被丟棄的影格）"]
         for report in reports where report.phase != .warmup {
             lines.append("")
-            lines.append("[\(report.phase.title)] \(report.frames) 幀・\(number(report.fps)) fps・偵測率 \(percent(report.detectionRate))・判定為右手 \(percent(report.rightHandRate))")
+            lines.append("[\(report.phase.title)\(report.config.map { " \($0)" } ?? "")] \(report.frames) 幀・\(number(report.fps)) fps・偵測率 \(percent(report.detectionRate))・判定為右手 \(percent(report.rightHandRate))")
             lines.append("  延遲 p50/p95：\(number(report.latencyP50)) / \(number(report.latencyP95)) ms（其中推論 \(number(report.inferenceP50)) / \(number(report.inferenceP95)) ms）")
             switch report.phase {
             case .still:
-                lines.append("  抖動（螢幕 pt）：原始 \(number(report.jitterRaw)) → 濾波後 \(number(report.jitterFiltered))")
+                lines.append("  逐幀跳動 p50/p95（螢幕 pt）：原始 \(number(report.jitterRaw?.p50)) / \(number(report.jitterRaw?.p95)) → 濾波後 \(number(report.jitterFiltered?.p50)) / \(number(report.jitterFiltered?.p95))")
             case .move:
                 lines.append("  濾波延遲：\(number(report.filterLagMs)) ms")
             case .pinch:
-                lines.append("  捏合 \(report.pinchCount) 次・捏合比例 p5/p95：\(number(report.pinchRatioP5, digits: 2)) / \(number(report.pinchRatioP95, digits: 2))（閾值 \(pinch.enterRatio) / \(pinch.exitRatio)）")
+                lines.append("  點擊 \(report.clickCount) 次（應為 10）・捏合比例 p5/p95：\(number(report.pinchRatioP5, digits: 2)) / \(number(report.pinchRatioP95, digits: 2))（閾值 \(pinch.enterRatio) / \(pinch.exitRatio)）")
             case .wake:
-                lines.append("  張手→握拳 \(report.wakeCount) 次")
+                lines.append("  喚醒 \(report.wakeCount) 次（應為 5）")
             case .daily:
-                lines.append("  沒有任何閘門時的誤觸：捏合 \(report.pinchCount) 次、張手→握拳 \(report.wakeCount) 次")
-            case .warmup:
+                lines.append("  誤觸：點擊 \(report.clickCount) 次、喚醒 \(report.wakeCount) 次")
+            case .warmup, .latency:
                 break
             }
         }

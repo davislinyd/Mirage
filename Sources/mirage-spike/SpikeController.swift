@@ -49,7 +49,8 @@ final class SpikeController: NSObject, NSApplicationDelegate {
         case .frame(let snapshot):
             view.snapshot = snapshot
         case .phase(let phase):
-            print("\n▶ \(phase.title)（\(Int(phase.duration)) 秒）：\(phase.instruction)")
+            let duration = phase.duration > 0 ? "（\(Int(phase.duration)) 秒）" : ""
+            print("\n▶ \(phase.title)\(duration)：\(phase.instruction)")
         case .finished:
             writeResults()
             NSApp.terminate(nil)

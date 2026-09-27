@@ -59,10 +59,10 @@ private func makeHand(curled: Bool = false, thumbTip: Vec2 = Vec2(x: 0.62, y: 0.
 }
 
 @Suite struct PhaseTests {
-    @Test func schedule() {
-        #expect(Phase.at(elapsed: 0)?.phase == .warmup)
-        #expect(Phase.at(elapsed: 3)?.phase == .still)
-        #expect(Phase.at(elapsed: 3.5)?.remaining == 4.5)
+    @Test func scheduleStartsAfterWarmup() {
+        #expect(Phase.at(elapsed: 0)?.phase == .latency)
+        #expect(Phase.at(elapsed: 32)?.phase == .still)
+        #expect(Phase.at(elapsed: 32.5)?.remaining == 4.5)
         #expect(Phase.at(elapsed: Phase.totalDuration)?.phase == nil)
     }
 }
@@ -85,6 +85,11 @@ private func makeHand(curled: Bool = false, thumbTip: Vec2 = Vec2(x: 0.62, y: 0.
     @Test func ignoresLowConfidenceJoints() {
         #expect(HandGeometry(hand: makeHand(confidence: 0.1), width: 1000, height: 1000).pinchRatio == nil)
     }
+
+    @Test func detectsCurledIndexFinger() {
+        #expect(HandGeometry(hand: makeHand(), width: 1000, height: 1000).indexCurled == false)
+        #expect(HandGeometry(hand: makeHand(curled: true), width: 1000, height: 1000).indexCurled == true)
+    }
 }
 
 @Suite struct DetectorTests {
@@ -97,13 +102,67 @@ private func makeHand(curled: Bool = false, thumbTip: Vec2 = Vec2(x: 0.62, y: 0.
         #expect(starts == 2)
     }
 
-    @Test func wakeRequiresFistShortlyAfterOpenHand() {
+    @Test func clickConfirmsOnNextFrame() {
+        func clicks(_ ratios: [Double?], valid: [Bool]? = nil) -> [Bool] {
+            var detector = PinchClickDetector()
+            return ratios.indices.map { detector.update(ratio: ratios[$0], valid: valid?[$0] ?? true) }
+        }
+        #expect(clicks([0.9, 0.2, 0.2, 0.2, 0.5]) == [false, false, true, false, false])
+        #expect(clicks([0.9, 0.2, 0.5, 0.9]) == [false, false, false, false])
+        #expect(clicks([0.9, 0.2, 0.2], valid: [true, false, true]) == [false, false, false])
+        #expect(clicks([0.9, 0.2, 0.2], valid: [true, true, false]) == [false, false, false])
+    }
+
+    /// 以 30 fps 依序送入各段姿勢，回傳觸發喚醒的幀序號。
+    private func wakes(_ segments: [(pose: HandPose?, seconds: Double)]) -> [Int] {
         var detector = WakeDetector()
-        let poses: [(pose: HandPose, t: Double)] = [
-            (.fist, 0), (.open, 1), (.fist, 1.5), (.fist, 1.6), (.open, 2), (.other, 2.5), (.fist, 3.2),
-        ]
-        let woke = poses.map { detector.update(pose: $0.pose, at: $0.t) }
-        #expect(woke == [false, false, true, false, false, false, false])
+        var fired: [Int] = []
+        var frame = 0
+        for segment in segments {
+            for _ in 0..<Int((segment.seconds * 30).rounded()) {
+                if detector.update(pose: segment.pose, at: Double(frame) / 30) { fired.append(frame) }
+                frame += 1
+            }
+        }
+        return fired
+    }
+
+    @Test func wakeRequiresHeldOpenHandThenHeldFist() {
+        #expect(wakes([(.open, 0.5), (.fist, 2)]) == [24])
+        #expect(wakes([(.open, 0.5), (.fist, 0.5), (.open, 0.5), (.fist, 0.5)]) == [24, 54])
+        #expect(wakes([(.open, 0.2), (.fist, 0.5)]) == [])
+        #expect(wakes([(.open, 0.5), (.fist, 0.2), (.other, 0.3)]) == [])
+        #expect(wakes([(.fist, 1)]) == [])
+    }
+
+    @Test func wakeToleratesSingleNoisyFrame() {
+        #expect(wakes([(.open, 0.2), (.other, 1.0 / 30), (.open, 0.2), (nil, 1.0 / 30), (.fist, 0.5)]) == [23])
+        #expect(wakes([(.open, 0.5), (.fist, 0.2), (.other, 1.0 / 30), (.fist, 0.2)]) == [24])
+    }
+}
+
+@Suite struct GestureProbeTests {
+    /// 靜止階段以 1280×720 建立掌寬基準，再以指定解析度送入張手、捏合、捏合。
+    /// 解析度減半時量到的掌寬只剩基準的一半，等同側手或離很遠的手。
+    private func clicks(width: Int, height: Int) -> Int {
+        var probe = GestureProbe(mapper: ScreenMapper(screenWidth: 1440, screenHeight: 900))
+        let still = (0..<30).map { i in
+            FrameRecord(t: Double(i) / 30, phase: .still, width: 1280, height: 720, latencyMs: 0, inferenceMs: 0, hands: [makeHand()])
+        }
+        let pinched = makeHand(thumbTip: Vec2(x: 0.54, y: 0.52))
+        let pinch = [makeHand(), pinched, pinched].enumerated().map { i, hand in
+            FrameRecord(t: 1 + Double(i) / 30, phase: .pinch, width: width, height: height, latencyMs: 0, inferenceMs: 0, hands: [hand])
+        }
+        var clicks = 0
+        for frame in still + pinch where probe.update(frame).clicked {
+            clicks += 1
+        }
+        return clicks
+    }
+
+    @Test func clickRequiresHandNearBaselineSize() {
+        #expect(clicks(width: 1280, height: 720) == 1)
+        #expect(clicks(width: 640, height: 360) == 0)
     }
 }
 
@@ -140,6 +199,22 @@ private func makeHand(curled: Bool = false, thumbTip: Vec2 = Vec2(x: 0.62, y: 0.
         let raw = try #require(report.jitterRaw)
         let filtered = try #require(report.jitterFiltered)
         #expect(report.detectionRate == 1)
-        #expect(filtered < raw / 3)
+        #expect(filtered.p95 < raw.p95 / 3)
+    }
+
+    @Test func latencyPhaseIsReportedPerConfigAfterSettling() {
+        var frames: [FrameRecord] = []
+        for (index, config) in ["A", "B"].enumerated() {
+            for i in 0..<120 {
+                frames.append(FrameRecord(
+                    t: Double(index * 120 + i) / 30, phase: .latency, width: 1280, height: 720,
+                    latencyMs: config == "A" ? 100 : 60, inferenceMs: 20, hands: [makeHand()], config: config
+                ))
+            }
+        }
+        let reports = SpikeAnalysis.report(frames: frames, mapper: ScreenMapper(screenWidth: 1440, screenHeight: 900))
+        #expect(reports.compactMap(\.config) == ["A", "B"])
+        #expect(reports.map(\.frames) == [60, 60])
+        #expect(reports.map(\.latencyP50) == [100, 60])
     }
 }

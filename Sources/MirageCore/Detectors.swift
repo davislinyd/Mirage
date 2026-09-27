@@ -23,26 +23,66 @@ public struct PinchDetector: Sendable {
     }
 }
 
-/// 喚醒手勢（張手 → 握拳）偵測：握拳須在最後一次張手後 `window` 秒內出現，單純舉手或握拳不會觸發。
-public struct WakeDetector: Sendable {
-    public var window = 1.0
-    private var lastOpen: Double?
+/// 點擊用的捏合：開始捏合後下一幀仍捏著，且兩幀都通過呼叫端的閘門（`valid`）才算一次點擊，
+/// 單幀的比例誤判不會觸發。代價是多等一幀（約 33 ms）。
+public struct PinchClickDetector: Sendable {
+    private var pinch = PinchDetector()
+    private var pending = false
+
+    public var isPinched: Bool { pinch.isPinched }
 
     public init() {}
 
-    /// 回傳 true 表示此幀完成一次喚醒手勢。
+    /// 回傳 true 表示此幀確認一次點擊。
+    public mutating func update(ratio: Double?, valid: Bool) -> Bool {
+        let started = pinch.update(ratio: ratio)
+        let confirmed = pending && pinch.isPinched && valid
+        pending = started && valid
+        return confirmed
+    }
+}
+
+/// 喚醒手勢（張手 → 握拳）偵測：張手維持 `hold` 秒後，`maxGap` 秒內轉為握拳並再維持 `hold` 秒才觸發。
+/// 單純舉手、握拳，或放下手、拿東西時一閃而過的張手與握拳都不會觸發。容忍單幀分類雜訊。
+public struct WakeDetector: Sendable {
+    public var hold = 0.3
+    public var maxGap = 0.3
+
+    private enum Stage {
+        case idle
+        case open(since: Double, last: Double)
+        case fist(since: Double)
+    }
+
+    private var stage = Stage.idle
+    /// 目前這段張手或握拳已容忍過一幀雜訊。
+    private var glitched = false
+
+    public init() {}
+
+    /// 回傳 true 表示此幀完成一次喚醒手勢。偵測不到手（nil）視同雜訊。
     public mutating func update(pose: HandPose?, at t: Double) -> Bool {
-        switch pose {
-        case .open:
-            lastOpen = t
-        case .fist:
-            if let lastOpen, t - lastOpen <= window {
-                self.lastOpen = nil
+        let pose = pose ?? .other
+        switch (stage, pose) {
+        case let (.open(since, _), .open):
+            stage = .open(since: since, last: t)
+        case let (.open(since, last), .fist) where last - since >= hold && t - last <= maxGap:
+            stage = .fist(since: t)
+        case let (.fist(since), .fist):
+            if t - since >= hold {
+                stage = .idle
+                glitched = false
                 return true
             }
-        case .other, nil:
-            break
+        case (.open, .other) where !glitched, (.fist, .other) where !glitched:
+            glitched = true
+            return false
+        case (_, .open):
+            stage = .open(since: t, last: t)
+        default:
+            stage = .idle
         }
+        glitched = false
         return false
     }
 }

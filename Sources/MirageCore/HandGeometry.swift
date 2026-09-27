@@ -38,6 +38,12 @@ public struct HandGeometry: Sendable {
         return gap / palm
     }
 
+    /// 食指彎曲（指尖比 PIP 關節離手腕近）。握拳或拿杯子時拇指也會碰到食指，但食指是彎的。
+    public var indexCurled: Bool? {
+        guard let tip = distance(.indexTip, .wrist), let pip = distance(.indexPIP, .wrist) else { return nil }
+        return tip <= pip
+    }
+
     /// 四指（不含拇指）指尖比 PIP 關節離手腕遠視為伸直，否則視為彎曲；全伸直為張手，全彎曲為握拳。
     public var pose: HandPose {
         let fingers: [(tip: Joint, pip: Joint)] = [

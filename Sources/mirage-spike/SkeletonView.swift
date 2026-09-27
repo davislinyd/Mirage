@@ -9,7 +9,8 @@ struct SkeletonSnapshot: Sendable {
     var cursor: Vec2?
     var pinched: Bool
     var phase: Phase
-    var remaining: Double
+    /// 階段剩餘秒數；準備階段不計時，為 nil。
+    var remaining: Double?
     var fps: Double
     var latencyMs: Double
 }
@@ -72,8 +73,9 @@ final class SkeletonView: NSView {
             }
         }
 
+        let countdown = snapshot.remaining.map { "・剩 \(Int($0.rounded(.up))) 秒" } ?? ""
         let text = """
-        \(snapshot.phase.title)・剩 \(Int(snapshot.remaining.rounded(.up))) 秒
+        \(snapshot.phase.title)\(countdown)
         \(snapshot.phase.instruction)
         \(Int(snapshot.fps.rounded())) fps・延遲 \(Int(snapshot.latencyMs.rounded())) ms
         """
