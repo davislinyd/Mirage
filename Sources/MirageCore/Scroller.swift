@@ -10,11 +10,10 @@ public struct Scroller: Sendable {
     public var stopSpeed = 20.0
     public var decay = 0.5
 
-    /// 捲動或慣性捲動中：游標停住，不點擊。
-    public var isEngaged: Bool { engaged || momentum != nil }
+    /// 兩指捲動中（不含放開後的慣性）：游標停住，不點擊。
+    public private(set) var isScrolling = false
 
     private var twoFingersSince: Double?
-    private var engaged = false
     private var filter = OneEuroFilter()
     private var last: (y: Double, t: Double)?
     /// 捲動速度（pt/s）。
@@ -29,17 +28,17 @@ public struct Scroller: Sendable {
     /// 回傳這一幀要捲動的整數 pt，內容往上為正。
     public mutating func update(twoFingers: Bool, pointing: Bool, y: Double?, at t: Double) -> Double? {
         twoFingersSince = twoFingers ? (twoFingersSince ?? t) : nil
-        if !engaged, let twoFingersSince, t - twoFingersSince >= hold {
-            engaged = true
+        if !isScrolling, let twoFingersSince, t - twoFingersSince >= hold {
+            isScrolling = true
             momentum = nil
         }
         var delta = 0.0
-        if engaged, pointing {
-            engaged = false
+        if isScrolling, pointing {
+            isScrolling = false
             if abs(velocity) >= flickSpeed { momentum = (velocity: velocity, t: t) }
             last = nil
             velocity = 0
-        } else if engaged, let y {
+        } else if isScrolling, let y {
             // 每次重新看到手，從目前位置開始算，不追舊位置。
             if last == nil { filter.reset() }
             let filtered = filter(y, at: t)
@@ -48,7 +47,7 @@ public struct Scroller: Sendable {
                 velocity += 0.5 * (delta / (t - last.t) - velocity)
             }
             last = (filtered, t)
-        } else if engaged {
+        } else if isScrolling {
             last = nil
         } else if let momentum, t > momentum.t {
             let v = momentum.velocity / (1 + (t - momentum.t) / decay)

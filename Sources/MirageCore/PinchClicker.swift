@@ -43,6 +43,8 @@ public struct PinchClicker: Sendable {
     /// `from`：開始拖曳時手指對應的游標位置。
     private var drag: (from: Vec2, position: Vec2)?
 
+    public var isPressed: Bool { pressedAt != nil }
+
     public init() {}
 
     /// `cursor`：這一幀手指對應的游標位置；`ratio`：捏合比例；`anchor`：食指根部（正規化影像座標）；

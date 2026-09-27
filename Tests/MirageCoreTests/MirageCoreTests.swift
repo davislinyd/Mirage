@@ -429,16 +429,16 @@ private func makeHand(
 }
 
 @Suite struct ScrollerTests {
-    /// 以 30 fps 依序送入各段：是否兩指伸直（否則只有食指）、秒數、手往上移的速度（pt/s）。回傳每一幀的捲動距離與是否在捲動中。
-    private func run(_ segments: [(twoFingers: Bool, seconds: Double, speed: Double)]) -> [(scroll: Double, engaged: Bool)] {
+    /// 以 30 fps 依序送入各段：是否兩指伸直（否則只有食指）、秒數、手往上移的速度（pt/s）。回傳每一幀的捲動距離與是否在兩指捲動中。
+    private func run(_ segments: [(twoFingers: Bool, seconds: Double, speed: Double)]) -> [(scroll: Double, scrolling: Bool)] {
         var scroller = Scroller()
-        var frames: [(scroll: Double, engaged: Bool)] = []
+        var frames: [(scroll: Double, scrolling: Bool)] = []
         var y = 500.0
         for segment in segments {
             for _ in 0..<Int((segment.seconds * 30).rounded()) {
                 y += segment.speed / 30
                 let scroll = scroller.update(twoFingers: segment.twoFingers, pointing: !segment.twoFingers, y: y, at: Double(frames.count) / 30)
-                frames.append((scroll ?? 0, scroller.isEngaged))
+                frames.append((scroll ?? 0, scroller.isScrolling))
             }
         }
         return frames
@@ -448,20 +448,20 @@ private func makeHand(
         // 往上移 150 pt 後停住，再收回中指：捲動 150 × 2，沒有慣性。
         let frames = run([(true, 0.2, 0), (true, 0.5, 300), (true, 0.2, 0), (false, 0.2, 0)])
         #expect(abs(frames.reduce(0) { $0 + $1.scroll } - 300) < 10)
-        #expect(frames.last?.engaged == false)
+        #expect(frames.suffix(6).allSatisfy { $0.scroll == 0 && !$0.scrolling })
     }
 
     @Test func flickKeepsScrolling() {
         // 往上移動中收回中指：放開後繼續捲動並減速，最後停止。
         let frames = run([(true, 0.2, 0), (true, 0.3, 600), (false, 3, 0)])
         #expect(frames.dropFirst(15).reduce(0) { $0 + $1.scroll } > 400)
-        #expect(frames[20].engaged)
-        #expect(frames.last?.engaged == false)
+        #expect(frames[20].scroll > 0 && !frames[20].scrolling)
+        #expect(frames.suffix(10).allSatisfy { $0.scroll == 0 })
     }
 
     @Test func briefTwoFingersDoNotScroll() {
         let frames = run([(false, 0.2, 100), (true, 2.0 / 30, 100), (false, 0.2, 100)])
-        #expect(frames.allSatisfy { $0.scroll == 0 && !$0.engaged })
+        #expect(frames.allSatisfy { $0.scroll == 0 && !$0.scrolling })
     }
 }
 

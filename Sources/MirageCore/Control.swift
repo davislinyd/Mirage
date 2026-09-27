@@ -132,9 +132,9 @@ public struct CursorController: Sendable {
         let twoFingers = inside && !clicker.isPressed && geometry?.isPointing(palmWidth: palm ?? 0, fingers: 2) == true
         // 與游標同比例、不限制在螢幕內，手超出校準範圍時仍能捲動。
         let knuckle = sized ? geometry?.normalized(.indexMCP) : nil
-        let height = knuckle.map { ($0.y - calibration.minY) / (calibration.maxY - calibration.minY) * screenHeight }
-        let scroll = scroller.update(twoFingers: twoFingers, pointing: pointing, y: height, at: t)
-        if scroller.isEngaged {
+        let y = knuckle.map { ($0.y - calibration.minY) / (calibration.maxY - calibration.minY) * screenHeight }
+        let scroll = scroller.update(twoFingers: twoFingers, pointing: pointing, y: y, at: t)
+        if scroller.isScrolling {
             clicker = PinchClicker()
             return Output(state: state, cursor: lastCursor, scroll: scroll)
         }
