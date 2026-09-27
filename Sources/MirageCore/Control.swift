@@ -57,7 +57,7 @@ public struct ControlStateMachine: Sendable {
     }
 }
 
-/// 主要手 → 啟用狀態 → 游標位置（螢幕 pt，原點左下）、左鍵與捲動。只有 Active 時輸出游標、左鍵與捲動。
+/// 主要手 → 啟用狀態 → 游標位置（螢幕 pt，原點左下）、左右鍵與捲動。只有 Active 時輸出。
 public struct CursorController: Sendable {
     public struct Output: Sendable {
         public var state: ControlState
@@ -65,6 +65,8 @@ public struct CursorController: Sendable {
         public var button: PinchClicker.Button?
         /// 這一幀要捲動的 pt，內容往上為正。
         public var scroll: Double?
+        /// 右鍵單擊。
+        public var rightClick = false
     }
 
     public let calibration: Calibration
@@ -85,6 +87,8 @@ public struct CursorController: Sendable {
     private var wake = WakeDetector()
     private var clicker = PinchClicker()
     private var scroller = Scroller()
+    /// 兩指捲動時的拇指–食指捏合 = 右鍵。
+    private var secondary = PinchClickDetector()
     /// 上一幀輸出的游標：捲動時游標停在這裡。
     private var lastCursor: Vec2?
     private var filter = OneEuroFilter2D()
@@ -134,13 +138,16 @@ public struct CursorController: Sendable {
         let knuckle = sized ? geometry?.normalized(.indexMCP) : nil
         let y = knuckle.map { ($0.y - calibration.minY) / (calibration.maxY - calibration.minY) * screenHeight }
         let scroll = scroller.update(twoFingers: twoFingers, pointing: pointing, y: y, at: t)
-        if scroller.isScrolling {
-            clicker = PinchClicker()
-            return Output(state: state, cursor: lastCursor, scroll: scroll)
-        }
         // 用沿用的掌寬：捏合時拇指常擋住食指根部。
         var ratio: Double?
         if sized, let palm, let gap = geometry?.distance(.thumbTip, .indexTip) { ratio = gap / palm }
+        if scroller.isScrolling {
+            clicker = PinchClicker()
+            // 同觸控板的兩指點按。
+            let rightClick = secondary.update(ratio: ratio, valid: sized)
+            return Output(state: state, cursor: lastCursor, scroll: scroll, rightClick: rightClick)
+        }
+        secondary = PinchClickDetector()
         // 食指彎曲代表握拳或拿東西，不是捏合；關節不確定時不擋，以免漏掉真的捏合。
         let click = clicker.update(
             cursor: cursor, ratio: ratio, anchor: sized ? geometry?.normalized(.indexMCP) : nil,

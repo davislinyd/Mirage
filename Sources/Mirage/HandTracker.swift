@@ -192,7 +192,10 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             let output = controller.update(hands: hands, width: width, height: height, at: t)
             mode = .controlling(controller)
             if output.state != .active { release() }
-            if let cursor = output.cursor { post(output.button, at: cursor) }
+            if let cursor = output.cursor {
+                post(output.button, at: cursor)
+                if output.rightClick { rightClick(at: cursor) }
+            }
             if let scroll = output.scroll { send(scroll: scroll) }
             publish(output.state)
         }
@@ -202,14 +205,28 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         CursorController(calibration: calibration, screenWidth: screen.width, screenHeight: screen.height)
     }
 
-    /// 游標（主螢幕 pt，原點左下）→ CGEvent 全域座標（原點左上）。按著左鍵時移動要送拖曳事件。
+    /// 按著左鍵時移動要送拖曳事件。
     private func post(_ button: PinchClicker.Button?, at cursor: Vec2) {
         let type: CGEventType = switch button {
         case .down: .leftMouseDown
         case .up: .leftMouseUp
         case nil: pressed ? .leftMouseDragged : .mouseMoved
         }
-        send(type, at: CGPoint(x: screen.minX + cursor.x, y: screen.maxY - cursor.y))
+        send(type, at: point(cursor))
+    }
+
+    /// 右鍵按下後立刻放開：選單在按下時打開，放開後保持打開。
+    private func rightClick(at cursor: Vec2) {
+        for type in [CGEventType.rightMouseDown, .rightMouseUp] {
+            let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point(cursor), mouseButton: .right)
+            event?.setIntegerValueField(.mouseEventClickState, value: 1)
+            event?.post(tap: .cghidEventTap)
+        }
+    }
+
+    /// 游標（主螢幕 pt，原點左下）→ CGEvent 全域座標（原點左上）。
+    private func point(_ cursor: Vec2) -> CGPoint {
+        CGPoint(x: screen.minX + cursor.x, y: screen.maxY - cursor.y)
     }
 
     /// 停止控制時放開還按著的左鍵，否則系統會當作左鍵一直按著。

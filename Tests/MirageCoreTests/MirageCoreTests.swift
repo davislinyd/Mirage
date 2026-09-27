@@ -320,9 +320,16 @@ private func makeHand(
         return wake + rest
     }
 
-    /// 食指指向、食指尖在 (`x`, `y`) 的手；`pinched` 為 true 時拇指尖碰到食指尖。
-    private func pointing(_ x: Double, _ y: Double, pinched: Bool = false) -> Hand {
-        makeHand(pointing: true, thumbTip: pinched ? Vec2(x: 0.54, y: 0.52) : Vec2(x: 0.62, y: 0.45), offset: Vec2(x: x - 0.54, y: y - 0.52))
+    /// 食指指向、食指尖在 (`x`, `y`) 的手；`pinched` 為 true 時拇指尖碰到食指尖，`twoFingers` 為 true 時中指也伸直。
+    private func pointing(_ x: Double, _ y: Double, pinched: Bool = false, twoFingers: Bool = false) -> Hand {
+        var hand = makeHand(
+            pointing: true, thumbTip: pinched ? Vec2(x: 0.54, y: 0.52) : Vec2(x: 0.62, y: 0.45), offset: Vec2(x: x - 0.54, y: y - 0.52)
+        )
+        if twoFingers {
+            hand.joints[Joint.middleDIP.rawValue].y += 0.09
+            hand.joints[Joint.middleTip.rawValue].y += 0.19
+        }
+        return hand
     }
 
     @Test func pointingAfterWakeMovesCursor() throws {
@@ -353,17 +360,23 @@ private func makeHand(
 
     @Test func twoFingersScrollWhileCursorHolds() throws {
         // 指著 (0.5, 0.5) 後伸直中指，手往上移 0.05（螢幕上 125 pt）。
-        var twoFingers = pointing(0.5, 0.55)
-        twoFingers.joints[Joint.middleDIP.rawValue].y += 0.09
-        twoFingers.joints[Joint.middleTip.rawValue].y += 0.19
-        var start = twoFingers
-        for i in start.joints.indices { start.joints[i].y -= 0.05 }
-        let scrolling = outputs(woken((pointing(0.5, 0.5), 1), (start, 0.3), (twoFingers, 1))).filter { $0.scroll != nil }
+        let scrolling = outputs(woken(
+            (pointing(0.5, 0.5), 1), (pointing(0.5, 0.5, twoFingers: true), 0.3), (pointing(0.5, 0.55, twoFingers: true), 1)
+        )).filter { $0.scroll != nil }
         let total = scrolling.reduce(0) { $0 + ($1.scroll ?? 0) }
         let cursor = try #require(scrolling.first?.cursor)
         #expect(total > 240 && total <= 250)
         #expect(abs(cursor.x - 500) < 1 && abs(cursor.y - 250) < 1)
         #expect(scrolling.allSatisfy { $0.cursor == cursor && $0.button == nil })
+    }
+
+    @Test func pinchWhileScrollingRightClicks() {
+        let frames = outputs(woken(
+            (pointing(0.5, 0.5), 1), (pointing(0.5, 0.5, twoFingers: true), 0.3),
+            (pointing(0.5, 0.5, pinched: true, twoFingers: true), 0.2), (pointing(0.5, 0.5, twoFingers: true), 0.3)
+        ))
+        #expect(frames.filter(\.rightClick).count == 1)
+        #expect(frames.allSatisfy { $0.button == nil })
     }
 
     @Test func pinchClicksOnlyWhileActive() {
