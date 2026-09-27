@@ -63,7 +63,7 @@ private func makeHand(curled: Bool = false, thumbTip: Vec2 = Vec2(x: 0.62, y: 0.
         #expect(Phase.at(elapsed: 0)?.phase == .warmup)
         #expect(Phase.at(elapsed: 3)?.phase == .still)
         #expect(Phase.at(elapsed: 3.5)?.remaining == 4.5)
-        #expect(Phase.at(elapsed: Phase.totalDuration) == nil)
+        #expect(Phase.at(elapsed: Phase.totalDuration)?.phase == nil)
     }
 }
 

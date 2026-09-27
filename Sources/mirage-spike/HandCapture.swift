@@ -155,7 +155,7 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             points[name].map { JointSample(x: $0.location.x, y: $0.location.y, c: Double($0.confidence)) }
                 ?? JointSample(x: 0, y: 0, c: 0)
         }
-        let chirality: Chirality = switch observation.chirality {
+        let chirality: MirageCore.Chirality = switch observation.chirality {
         case .left: .left
         case .right: .right
         default: .unknown
