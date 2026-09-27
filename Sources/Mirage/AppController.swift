@@ -19,6 +19,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let accessibilityItem = NSMenuItem(title: "允許輔助使用（移動游標需要）…", action: #selector(openAccessibility), keyEquivalent: "")
     private var hotKey: HotKey?
     private var ready = false
+    /// 相機無法使用的原因。
+    private var problem: String?
     private var enabled = true
     /// 暫停的原因（螢幕鎖定、睡眠等），全部解除才恢復。
     private var pauses: Set<String> = []
@@ -52,25 +54,28 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         calibration = UserDefaults.standard.data(forKey: Self.calibrationKey).flatMap {
             try? JSONDecoder().decode(Calibration.self, from: $0)
         }
+        // 在相機就緒前設定：就緒前按了「重新校準」時，才不會被這裡蓋掉。
+        tracker.use(calibration)
         // 沒有輔助使用權限時，系統會跳出提示並引導到系統設定。
         AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
         refresh()
 
         Task {
             guard await AVCaptureDevice.requestAccess(for: .video) else {
-                fail("Mirage 需要相機權限：到 System Settings → Privacy & Security → Camera 打開 Mirage，再重新開啟。")
+                report("沒有相機權限：到 System Settings → Privacy & Security → Camera 打開 Mirage，再重新開啟 Mirage。")
+                return
             }
             do {
                 try tracker.configure()
             } catch {
-                fail("相機啟動失敗：\(error)")
+                report("相機啟動失敗：\(error)")
+                return
             }
             ready = true
-            if let calibration {
-                tracker.use(calibration)
-                update()
-            } else {
+            if calibration == nil {
                 recalibrate()
+            } else {
+                update()
             }
         }
     }
@@ -85,9 +90,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func recalibrate() {
+        if let problem {
+            panel.show(problem: problem)
+            return
+        }
         enabled = true
         calibrating = true
-        panel.show(.collecting(remaining: CalibrationSession().duration))
+        panel.show(nil)
         tracker.calibrate()
         update()
     }
@@ -139,8 +148,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 選單列圖示與狀態說明。
     private var status: (symbol: String, text: String) {
+        if let problem { return ("exclamationmark.triangle", problem) }
         if !enabled { return ("hand.raised.slash", "已停用") }
         if !pauses.isEmpty { return ("hand.raised.slash", "已暫停：螢幕鎖定或睡眠") }
+        if !ready { return ("hourglass", "正在啟動相機…") }
         if calibrating { return ("scope", "校準中") }
         if calibration == nil { return ("hand.raised.slash", "尚未校準") }
         switch state {
@@ -185,11 +196,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         update()
     }
 
-    private func fail(_ message: String) -> Never {
-        NSApp.activate()
-        let alert = NSAlert()
-        alert.messageText = message
-        alert.runModal()
-        exit(1)
+    /// 選單列 App 不在前景時，提示框（NSAlert）可能被系統藏起來，所以改顯示在選單列與校準視窗。
+    private func report(_ problem: String) {
+        self.problem = problem
+        panel.show(problem: problem)
+        refresh()
     }
 }

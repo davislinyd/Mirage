@@ -20,8 +20,16 @@ public struct Calibration: Codable, Sendable, Equatable {
 /// 食指尖位置的 5–95% 範圍：去掉偶發的極端值，也讓游標不必把手伸到最遠就能到達螢幕邊緣。只收指向的幀：掌寬
 /// 要在實際操作的姿勢與距離量（M0.2 靜止時手較靠近鏡頭，掌寬比移動時大 13%），也順便確認這個姿勢認得出來。
 public struct CalibrationSession: Sendable {
+    /// 這一幀為什麼有或沒有累計時間，讓使用者知道要怎麼調整。
+    public enum Hint: Sendable, Equatable {
+        case noHand
+        /// 看得到手，但不是食指指向。
+        case notPointing
+        case pointing
+    }
+
     public enum Progress: Sendable, Equatable {
-        case collecting(remaining: Double)
+        case collecting(remaining: Double, hint: Hint)
         case done(Calibration)
         /// 移動範圍太小，已重新開始收集。
         case tooSmall
@@ -40,18 +48,22 @@ public struct CalibrationSession: Sendable {
     public init() {}
 
     public mutating func update(hands: [Hand], width: Int, height: Int, at t: Double) -> Progress {
-        let geometry = hands.primary.map { HandGeometry(hand: $0, width: width, height: height) }
-        guard let geometry, let palm = geometry.palmWidth, let tip = geometry.normalized(.indexTip),
+        guard let hand = hands.primary else {
+            lastT = nil
+            return .collecting(remaining: duration - elapsed, hint: .noHand)
+        }
+        let geometry = HandGeometry(hand: hand, width: width, height: height)
+        guard let palm = geometry.palmWidth, let tip = geometry.normalized(.indexTip),
               geometry.isPointing(palmWidth: palm) == true
         else {
             lastT = nil
-            return .collecting(remaining: duration - elapsed)
+            return .collecting(remaining: duration - elapsed, hint: .notPointing)
         }
         if let lastT, t - lastT <= maxStep { elapsed += t - lastT }
         lastT = t
         palms.append(palm)
         tips.append(tip)
-        guard elapsed >= duration else { return .collecting(remaining: duration - elapsed) }
+        guard elapsed >= duration else { return .collecting(remaining: duration - elapsed, hint: .pointing) }
 
         let xs = tips.map(\.x)
         let ys = tips.map(\.y)

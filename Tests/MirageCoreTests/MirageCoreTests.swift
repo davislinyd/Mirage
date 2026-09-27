@@ -228,7 +228,17 @@ private func makeHand(
     }
 
     @Test func onlyPointingHandCounts() {
-        #expect(progress(radius: 0.15, seconds: 1, pointing: false).last == .collecting(remaining: 4))
+        #expect(progress(radius: 0.15, seconds: 1, pointing: false).last == .collecting(remaining: 4, hint: .notPointing))
+    }
+
+    @Test func hintsWhetherTimeCounts() {
+        var session = CalibrationSession()
+        #expect(session.update(hands: [], width: 1280, height: 720, at: 0) == .collecting(remaining: 4, hint: .noHand))
+        guard case .collecting(_, let hint)? = progress(radius: 0.15, seconds: 1).last else {
+            Issue.record("一秒內不應完成校準")
+            return
+        }
+        #expect(hint == .pointing)
     }
 }
 
