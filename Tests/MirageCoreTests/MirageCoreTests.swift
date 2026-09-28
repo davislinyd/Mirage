@@ -445,6 +445,21 @@ private func makeHand(
         #expect(frames.allSatisfy { $0.button == nil && !$0.escape })
     }
 
+    @Test func triggerWhileMovingDoesNotBlockNextRightClick() {
+        // 食指尖在 (`x`, 0.5)，拇指尖到食指 PIP 約 `thumb` 掌寬。
+        func hand(_ x: Double, thumb: Double) -> Hand {
+            makeHand(pointing: true, thumbTip: Vec2(x: 0.54 + thumb * 0.12, y: 0.42), offset: Vec2(x: x - 0.54, y: -0.02))
+        }
+        // 快速移到目標途中拇指跟著壓下（手在動，不算右鍵）；之後拇指只抬到 0.29，沒有明顯抬起。
+        let moving: [Segment] = (0..<13).map { i in (hand(0.45 + Double(i) * 0.01, thumb: i < 4 ? 0.68 : 0.21), 1.0 / 30) }
+        let frames = outputs(woken((hand(0.45, thumb: 0.68), 1)) + moving + [
+            (hand(0.57, thumb: 0.29), 0.6), (hand(0.57, thumb: 0.1), 0.3), (hand(0.57, thumb: 0.29), 0.5),
+        ])
+        let clicks = frames.indices.filter { frames[$0].rightClick }
+        #expect(clicks.count == 1)
+        #expect(clicks.allSatisfy { $0 > frames.count - 25 })
+    }
+
     @Test func losingHandDeactivates() throws {
         let short = try #require(run(woken((pointing(0.5, 0.5), 1), (nil, 1.5), (pointing(0.5, 0.5), 1))))
         let long = try #require(run(woken((pointing(0.5, 0.5), 1), (nil, 2.2), (pointing(0.5, 0.5), 1))))
@@ -528,11 +543,19 @@ private func makeHand(
 }
 
 @Suite struct TapDetectorTests {
-    /// 以 30 fps 依序送入彎曲量（度），姿勢正確；`palmSpeed` 為手掌速度（掌寬／秒）。回傳每幀是否確認按下與按著。
-    private func run(_ flexes: [Double], palmSpeed: Double = 0, posed: [Bool]? = nil) -> [(pressed: Bool, held: Bool)] {
+    /// 以 30 fps 依序送入彎曲量（度），姿勢正確；`palmSpeed` 為手掌速度（掌寬／秒），`speeds` 逐幀指定時取代它；
+    /// `heights`、`middles` 為食指尖、中指尖比各自的指根高出幾個掌寬，預設 1（伸直）與 −0.4（收起）。回傳每幀
+    /// 是否確認按下與按著。
+    private func run(
+        _ flexes: [Double], palmSpeed: Double = 0, speeds: [Double]? = nil, heights: [Double]? = nil, middles: [Double]? = nil,
+        posed: [Bool]? = nil
+    ) -> [(pressed: Bool, held: Bool)] {
         var detector = TapDetector()
         return flexes.enumerated().map { i, flex in
-            let pressed = detector.update(flex: flex, posed: posed?[i] ?? true, palmSpeed: palmSpeed, at: Double(i) / 30)
+            let pressed = detector.update(
+                flex: flex, height: heights?[i] ?? 1, middle: middles?[i] ?? -0.4, posed: posed?[i] ?? true,
+                palmSpeed: speeds?[i] ?? palmSpeed, at: Double(i) / 30
+            )
             return (pressed, detector.isPressed)
         }
     }
@@ -553,6 +576,30 @@ private func makeHand(
         #expect(run(Array(repeating: 5, count: 10) + [20, 35, 40, 40], palmSpeed: 1).allSatisfy { !$0.pressed })
     }
 
+    @Test func tapWhileHandSettlesPresses() {
+        // 移到目標後馬上按：手掌還帶著一點速度，按的動作也讓指根晃動。
+        let speeds = Array(repeating: 0.2, count: 10) + [0.4, 0.45, 0.4, 0.3]
+        #expect(run(Array(repeating: 5, count: 10) + [20, 35, 40, 40], speeds: speeds).contains { $0.pressed })
+    }
+
+    @Test func bendRightAfterFastMoveDoesNotPress() {
+        // 快速移動剛停下時的假彎曲：開始彎的時候手掌還很快。
+        let speeds = Array(repeating: 1.5, count: 10) + [0.4, 0.4, 0.4, 0.4]
+        #expect(run(Array(repeating: 5, count: 10) + [20, 35, 40, 40], speeds: speeds).allSatisfy { !$0.pressed })
+    }
+
+    @Test func foldingWholeFingerDoesNotPress() {
+        // 整根食指從指根往下甩：指尖幾乎降到指根的高度。
+        let heights = Array(repeating: 1.0, count: 10) + [0.5, 0.25, 0.2, 0.25]
+        #expect(run(Array(repeating: 5, count: 10) + [20, 35, 40, 40], heights: heights).allSatisfy { !$0.pressed })
+    }
+
+    @Test func raisingMiddleFingerDoesNotPress() {
+        // 從指向換成兩指：食指先彎，中指同時開始伸直。
+        let middles = Array(repeating: -0.4, count: 10) + [-0.35, -0.3, -0.25, -0.2]
+        #expect(run(Array(repeating: 5, count: 10) + [20, 35, 40, 40], middles: middles).allSatisfy { !$0.pressed })
+    }
+
     @Test func leavingPoseReleases() {
         let frames = run(Array(repeating: 5, count: 10) + [30, 40, 40], posed: Array(repeating: true, count: 12) + [false])
         #expect(frames[11].pressed && !frames[12].held)
@@ -571,7 +618,7 @@ private func makeHand(
         var clicker = TapClicker()
         return frames.enumerated().map { i, frame in
             clicker.update(
-                cursor: frame.map { Vec2(x: $0.x, y: $0.y) }, flex: frame?.flex, posed: true,
+                cursor: frame.map { Vec2(x: $0.x, y: $0.y) }, flex: frame?.flex, height: 1, middle: -0.4, posed: true,
                 palm: frame.map { _ in Vec2(x: palmStep * Double(i), y: 0) }, valid: true, at: Double(i) / 30
             )
         }

@@ -5,7 +5,8 @@
 /// 一兩幀收起，所以要連續三幀：食指在第三幀前就彎下了。
 public struct TriggerDetector: Sendable {
     public var window = 0.5
-    public var drop = 0.15
+    /// 掌寬。移過去就扳機時拇指常沒先抬高，只壓下 0.13–0.14；0.12 會在移動途中誤觸。
+    public var drop = 0.13
     public var lift = 0.1
     /// 按下時距離須在此值以下：拇指要真的壓到食指旁。
     public var near = 0.4

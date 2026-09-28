@@ -200,11 +200,17 @@ public struct CursorController: Sendable {
         held = nil
         // 按鍵時食指會彎，食指尖只要仍高於指根就算指向姿勢。
         let tapPosed = geometry?.isPointing(palmWidth: palm ?? 0, up: 0.2) == true
+        // 中指尖比中指根高出幾個掌寬：按鍵時中指不動。
+        var middle: Double?
+        if let palm, let tip = geometry?.normalized(.middleTip), let base = geometry?.normalized(.middleMCP) {
+            middle = (tip.y - base.y) * Double(height) / palm
+        }
         // 除以固定的校準掌寬：每幀量到的掌寬有約 5% 的雜訊，拿它換算位置，速度會多出約 0.7 掌寬／秒。
         let scale = calibration.palmWidth
         let palmPoint = sized ? geometry?.palmCenter.map { Vec2(x: $0.x / scale, y: $0.y / scale) } : nil
         let click = clicker.update(
-            cursor: cursor, flex: sized ? geometry?.indexFlex : nil, posed: tapPosed, palm: palmPoint, valid: sized, at: t
+            cursor: cursor, flex: sized ? geometry?.indexFlex : nil, height: rise, middle: middle, posed: tapPosed, palm: palmPoint,
+            valid: sized, at: t
         )
         // 右鍵：拇指壓下時食指也會動，點在最近 `window` 秒內拇指距離最大那一幀（開始動之前）的游標位置。
         let straight = posed && (rise ?? rightTrigger.straight) >= rightTrigger.straight
@@ -215,7 +221,10 @@ public struct CursorController: Sendable {
         }
         triggerCursors.removeAll { t - $0.t > rightTrigger.window }
         let still = (clicker.palmSpeed ?? .infinity) < rightClickStillSpeed
-        let rightClick = rightTrigger.update(distance: distance, rise: rise, posed: posed, at: t) && sized && still
+        let triggered = rightTrigger.update(distance: distance, rise: rise, posed: posed, at: t)
+        let rightClick = triggered && sized && still
+        // 不算數的扳機（例如移動途中拇指跟著晃）不留在按下狀態：拇指平常若沒抬高，要等抬起 `lift` 才放開，會吃掉下一下。
+        if triggered, !rightClick { rightTrigger = TriggerDetector() }
         let top = triggerCursors.map(\.distance).max()
         let rightAt = rightClick ? triggerCursors.last(where: { $0.distance == top })?.cursor : nil
         if rightClick { triggerCursors = [] }

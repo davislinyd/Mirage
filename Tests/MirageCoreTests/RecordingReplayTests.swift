@@ -15,9 +15,18 @@ private enum Replay {
     /// 1:1 沒有用來調參數。
     static let gestures = ["gestures-2026-09-28T02-23-51Z", "gestures-2026-09-28T02-36-43Z", "gestures-2026-09-28T07-36-00Z"]
     static let gesturesAvailable = gestures.allSatisfy(exists)
-    /// `mirage-spike precision`（手放低、1:1）：懸停、慢速對準、快速移動、按鍵點擊等。第二份只用來驗證。
+    /// `mirage-spike precision`（手放低、1:1）：懸停、慢速對準、快速移動、按鍵點擊等。第二份原本只用來驗證，按鍵的
+    /// 指尖高度門檻參考了它快速移動時甩手指的誤觸。
     static let precision = ["precision-2026-09-28T09-59-48Z", "precision-2026-09-28T10-04-58Z"]
     static let precisionAvailable = precision.allSatisfy(exists)
+    /// `mirage-spike controls`：十字每 3 秒換位置，移過去後按鍵。兩份的「移過去右鍵」階段也是按鍵，不是扳機。
+    static let controls = ["controls-2026-09-28T13-54-33Z", "controls-2026-09-28T13-57-37Z"]
+    /// 同一個腳本，但只移過去、沒有按。
+    static let controlsWithoutTaps = ["controls-2026-09-28T13-37-57Z", "controls-2026-09-28T13-40-07Z"]
+    /// 同一個腳本，「移過去右鍵」是拇指扳機。按鍵的手掌速度與食指高度門檻沒有參考這兩份；中指門檻來自第一份兩指
+    /// 扳機開頭的誤觸，扳機的拇指門檻與移動時的扳機不留在按下狀態，來自第二份漏掉的右鍵。
+    static let controlsWithTriggers = ["controls-2026-09-28T14-10-14Z", "controls-2026-09-28T14-37-53Z"]
+    static let controlsAvailable = (controls + controlsWithoutTaps + controlsWithTriggers).allSatisfy(exists)
 
     static func exists(_ name: String) -> Bool {
         FileManager.default.fileExists(atPath: directory.appendingPathComponent("\(name).jsonl").path)
@@ -186,5 +195,34 @@ private enum Replay {
             let raw = median(try Replay.active(frames, phase: phase, stabilized: false))
             #expect(steady <= raw / 2, "\(phase) \(steady) vs \(raw)")
         }
+    }
+}
+
+@Suite(.enabled(if: Replay.controlsAvailable)) struct ControlsReplayTests {
+    private func leftClicks(_ name: String, _ phases: [Phase]) throws -> Int {
+        let frames = try Replay.load(name)
+        return try phases.reduce(0) { total, phase in
+            total + (try Replay.active(frames, phase: phase)).filter { $0.button == .down }.count
+        }
+    }
+
+    @Test(arguments: Replay.controls) func tapsRightAfterMovingClick(name: String) throws {
+        // 兩份各按了 10–12 下，其中一下只彎 18°。多數是一移到十字就按，手掌還沒完全停下。
+        #expect(try leftClicks(name, [.moveAndTap, .moveAndTrigger]) >= 10)
+        #expect(try leftClicks(name, [.move]) == 0)
+    }
+
+    @Test(arguments: Replay.controlsWithTriggers) func thumbTriggersRightAfterMovingRightClick(name: String) throws {
+        // 各按鍵 5–6 下，其中一下只彎 13–17°；各扳機 6 下，拇指常只壓下 0.13–0.14 掌寬。
+        #expect(try leftClicks(name, [.moveAndTap]) >= 4)
+        let triggers = try Replay.active(try Replay.load(name), phase: .moveAndTrigger)
+        #expect(triggers.filter(\.rightClick).count >= 5)
+        #expect(triggers.allSatisfy { $0.button == nil })
+        // 第一份兩指扳機開頭從指向換成兩指時，食指先彎到 97°，中指接著伸直。
+        #expect(try leftClicks(name, [.move, .twoFingerTrigger, .halfBend, .threeFingerBend, .fist, .daily]) == 0)
+    }
+
+    @Test(arguments: Replay.controlsWithoutTaps) func movingBetweenTargetsDoesNotClick(name: String) throws {
+        #expect(try leftClicks(name, [.move, .moveAndTap, .moveAndTrigger, .twoFingerTrigger, .halfBend, .threeFingerBend, .fist, .daily]) == 0)
     }
 }

@@ -48,9 +48,11 @@ public struct TapClicker: Sendable {
 
     public init() {}
 
-    /// `cursor`：這一幀手指對應的游標位置；`flex`、`posed`：同 `TapDetector`；`palm`：手掌中心，以校準掌寬為單位；
-    /// `valid`：手的大小符合，不符時不按下。
-    public mutating func update(cursor: Vec2?, flex: Double?, posed: Bool, palm: Vec2?, valid: Bool, at t: Double) -> Output {
+    /// `cursor`：這一幀手指對應的游標位置；`flex`、`height`、`middle`、`posed`：同 `TapDetector`；`palm`：手掌中心，
+    /// 以校準掌寬為單位；`valid`：手的大小符合，不符時不按下。
+    public mutating func update(
+        cursor: Vec2?, flex: Double?, height: Double?, middle: Double?, posed: Bool, palm: Vec2?, valid: Bool, at t: Double
+    ) -> Output {
         if let palm { palms.append((t, palm)) }
         palms.removeAll { t - $0.t > speedWindow }
         var speed: Double?
@@ -68,7 +70,7 @@ public struct TapClicker: Sendable {
         }
         history.removeAll { t - $0.t > tap.window }
 
-        let confirmed = tap.update(flex: flex, posed: posed, palmSpeed: speed, at: t) && valid
+        let confirmed = tap.update(flex: flex, height: height, middle: middle, posed: posed, palmSpeed: speed, at: t) && valid
         // 最小值有好幾幀時取最後一幀：開始按之前的最後一刻。
         let low = history.map(\.flex).min()
         if frozen == nil, posed, let flex, let rest = history.last(where: { $0.flex == low }),
