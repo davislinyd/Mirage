@@ -55,6 +55,7 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         .littleMCP, .littlePIP, .littleDIP, .littleTip,
     ]
     private let mapper: ScreenMapper
+    private let script: Script
     private let sink: @MainActor @Sendable (Event) -> Void
 
     private var device: AVCaptureDevice?
@@ -74,16 +75,17 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private var recentTimes: [Double] = []
     private var recentLatencies: [Double] = []
 
-    init(mapper: ScreenMapper, sink: @escaping @MainActor @Sendable (Event) -> Void) {
+    init(mapper: ScreenMapper, script: Script, sink: @escaping @MainActor @Sendable (Event) -> Void) {
         self.mapper = mapper
+        self.script = script
         self.sink = sink
         probe = GestureProbe(mapper: mapper)
         super.init()
         request.maximumHandCount = 2
     }
 
-    /// 設定並啟動相機，回傳所選裝置、格式與視訊效果的說明。
-    func start() throws -> String {
+    /// 設定並啟動相機，回傳所選裝置、格式與視訊效果的說明。`size` 指定格式，nil 時同 App。
+    func start(size: (width: Int32, height: Int32)?) throws -> String {
         let effects = Self.disableVideoEffects()
         let builtIn = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.builtInWideAngleCamera], mediaType: .video, position: .unspecified
@@ -91,14 +93,18 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         guard let device = builtIn ?? AVCaptureDevice.default(for: .video) else { throw CaptureError.noCamera }
         self.device = device
 
-        // 優先最高幀率（延遲下限由幀間隔決定），其次在 1280 寬以內取最大解析度；手部模型不需要更高解析度。
         let formats = device.formats.compactMap { format -> Candidate? in
             guard let range = format.videoSupportedFrameRateRanges.max(by: { $0.maxFrameRate < $1.maxFrameRate }) else { return nil }
             return (format, range, CMVideoFormatDescriptionGetDimensions(format.formatDescription))
         }
-        let preferred = formats.filter { $0.size.width <= 1280 }
+        // 預設同 App：優先最高幀率（延遲下限由幀間隔決定），其次在寬度 1600 以內、不是直式的格式中取最高的。
+        let preferred = formats.filter { candidate in
+            size.map { candidate.size.width == $0.width && candidate.size.height == $0.height }
+                ?? (candidate.size.width >= candidate.size.height && candidate.size.width <= 1600)
+        }
+        if size != nil, preferred.isEmpty { throw CaptureError.noFormat }
         guard let best = (preferred.isEmpty ? formats : preferred).max(by: {
-            ($0.range.maxFrameRate, $0.size.width) < ($1.range.maxFrameRate, $1.size.width)
+            ($0.range.maxFrameRate, $0.size.height, $0.size.width) < ($1.range.maxFrameRate, $1.size.height, $1.size.width)
         }) else { throw CaptureError.noFormat }
 
         session.beginConfiguration()
@@ -174,7 +180,7 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         var phase = Phase.warmup
         var remaining: Double?
         if let startTime {
-            guard let current = Phase.at(elapsed: t - startTime) else {
+            guard let current = script.at(elapsed: t - startTime) else {
                 finished = true
                 emit(.finished)
                 return

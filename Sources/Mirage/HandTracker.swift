@@ -1,15 +1,21 @@
 @preconcurrency import AVFoundation
 import CoreGraphics
+import OSLog
 @preconcurrency import Vision
 import MirageCore
 
 /// 相機 → Vision → 校準或游標控制 → CGEvent。可變狀態只在 `queue` 上存取；推論在 `workQueue`，由 `busy` 保證
 /// 同時只有一個，忙碌時只保留最新一幀（M0.2 的非同步推論）。因此標記為 @unchecked Sendable。
 final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
+    /// 動作紀錄：狀態、點擊、右鍵、捲動模式與送出的捲動記為 notice（會保存），捲動模式中每幀的食指高度記為 info
+    /// （只在記憶體，用 `log stream --level info` 即時看）。
+    /// `log show --predicate 'subsystem == "io.github.davislinyd.Mirage"' --last 1h --style compact`
+    private static let log = Logger(subsystem: "io.github.davislinyd.Mirage", category: "gesture")
+
     enum Event: Sendable {
         case state(ControlState)
-        /// 兩指捲動開始、結束，或換成另一端起點。
-        case scrolling(Scroller.Stroke?)
+        /// 兩指捲動開始、結束、換成另一端起點，或換起點的進度改變（`switching`，未顯示時為 nil）。
+        case scrolling(Scroller.Stroke?, switching: Double?)
         case calibration(CalibrationSession.Progress)
     }
 
@@ -55,12 +61,14 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
 
     private var device: AVCaptureDevice?
     private var format: (format: AVCaptureDevice.Format, frameDuration: CMTime)?
+    /// `configure()` 選定的影像寬高。
+    private(set) var frameSize: (width: Int, height: Int)?
     private var running = false
     private var busy = false
     private var waiting: Pending?
     private var mode = Mode.waiting
     private var state = ControlState.idle
-    private var scrolling: Scroller.Stroke?
+    private var scrolling: (stroke: Scroller.Stroke?, switching: Double?) = (nil, nil)
     /// 已送出左鍵按下、還沒送出放開。
     private var pressed = false
 
@@ -80,14 +88,13 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         ).devices.first
         guard let device = builtIn ?? AVCaptureDevice.default(for: .video) else { throw TrackerError.noCamera }
 
-        // 同 M0：優先最高幀率（延遲下限由幀間隔決定），其次在 1280 寬以內取最大解析度。
-        let formats = device.formats.compactMap { format -> (format: AVCaptureDevice.Format, range: AVFrameRateRange, width: Int32)? in
+        // 優先最高幀率（延遲下限由幀間隔決定），其次畫面最高：鏡頭在螢幕上方，手放低時 16:9 會切掉手掌下半部。
+        let formats = device.formats.compactMap { format -> (format: AVCaptureDevice.Format, range: AVFrameRateRange, size: CMVideoDimensions)? in
             guard let range = format.videoSupportedFrameRateRanges.max(by: { $0.maxFrameRate < $1.maxFrameRate }) else { return nil }
-            return (format, range, CMVideoFormatDescriptionGetDimensions(format.formatDescription).width)
+            return (format, range, CMVideoFormatDescriptionGetDimensions(format.formatDescription))
         }
-        let preferred = formats.filter { $0.width <= 1280 }
-        guard let best = (preferred.isEmpty ? formats : preferred).max(by: {
-            ($0.range.maxFrameRate, $0.width) < ($1.range.maxFrameRate, $1.width)
+        guard let best = HandTracker.preferred(formats, size: \.size).max(by: {
+            ($0.range.maxFrameRate, $0.size.height, $0.size.width) < ($1.range.maxFrameRate, $1.size.height, $1.size.width)
         }) else { throw TrackerError.configuration }
 
         session.beginConfiguration()
@@ -103,6 +110,14 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         session.addOutput(output)
         self.device = device
         format = (best.format, best.range.minFrameDuration)
+        frameSize = (Int(best.size.width), Int(best.size.height))
+    }
+
+    /// 可選的格式：不是直式（直式左右太窄，手會碰到畫面邊緣），寬度在 1600 以內（手部模型不需要更高解析度）。
+    /// 內建鏡頭上 1:1 的 1552×1552 比 16:9 多看到下方約一成五的畫面，推論時間不變；沒有合適的格式時全部都可選。
+    static func preferred<T>(_ formats: [T], size: KeyPath<T, CMVideoDimensions>) -> [T] {
+        let fitting = formats.filter { $0[keyPath: size].width >= $0[keyPath: size].height && $0[keyPath: size].width <= 1600 }
+        return fitting.isEmpty ? formats : fitting
     }
 
     /// 開始或停止擷取。停止時丟棄進行中的推論結果並回到 Idle，之後須重新喚醒。
@@ -197,11 +212,19 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             if output.state != .active { release() }
             if let cursor = output.cursor {
                 post(output.button, at: cursor)
-                if output.rightClick { rightClick(at: cursor) }
+                if let button = output.button { Self.log.notice("button \(String(describing: button), privacy: .public)") }
+                if output.rightClick {
+                    Self.log.notice("right click")
+                    rightClick(at: cursor)
+                }
             }
-            if let scroll = output.scroll { send(scroll: scroll) }
+            if output.scrolling != nil, let rise = output.rise { Self.log.info("rise \(rise, format: .fixed(precision: 2))") }
+            if let scroll = output.scroll {
+                Self.log.notice("scroll \(scroll, format: .fixed(precision: 0))")
+                send(scroll: scroll)
+            }
             publish(output.state)
-            publish(scrolling: output.scrolling)
+            publish(scrolling: output.scrolling, switching: output.switching)
         }
     }
 
@@ -210,7 +233,7 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     }
 
     /// 按著左鍵時移動要送拖曳事件。
-    private func post(_ button: PinchClicker.Button?, at cursor: Vec2) {
+    private func post(_ button: TriggerClicker.Button?, at cursor: Vec2) {
         let type: CGEventType = switch button {
         case .down: .leftMouseDown
         case .up: .leftMouseUp
@@ -276,14 +299,18 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private func publish(_ state: ControlState) {
         guard state != self.state else { return }
         self.state = state
-        scrolling = nil
+        scrolling = (nil, nil)
+        Self.log.notice("state \(String(describing: state), privacy: .public)")
         emit(.state(state))
     }
 
-    private func publish(scrolling: Scroller.Stroke?) {
-        guard scrolling != self.scrolling else { return }
-        self.scrolling = scrolling
-        emit(.scrolling(scrolling))
+    /// 換起點的進度停住超過約 0.5 秒（4 成）才顯示，一般捲動兩下之間的停頓不會閃；以一成為單位通知，避免每幀都送。
+    private func publish(scrolling stroke: Scroller.Stroke?, switching: Double?) {
+        let shown = switching.flatMap { $0 >= 0.4 ? ($0 * 10).rounded(.down) / 10 : nil }
+        guard stroke != scrolling.stroke || shown != scrolling.switching else { return }
+        if stroke != scrolling.stroke { Self.log.notice("scrolling \(stroke.map { String(describing: $0) } ?? "off", privacy: .public)") }
+        scrolling = (stroke, shown)
+        emit(.scrolling(stroke, switching: shown))
     }
 
     private func emit(_ event: Event) {

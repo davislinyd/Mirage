@@ -3,7 +3,7 @@ import MirageCore
 import QuartzCore
 
 /// 游標周圍的光圈，讓使用者知道手勢狀態：喚醒後閃爍（手勢已辨識，伸出食指開始），控制中持續發光，兩指捲動時
-/// 光圈裡有兩根手指，往會捲動的那一下的方向滑動。
+/// 光圈裡有兩根手指，往會捲動的那一下的方向滑動；停住準備換方向時，光圈外緣逐漸畫滿一圈。
 /// 是滑鼠事件穿透的透明小視窗，顯示期間每次螢幕更新都移到游標位置，所以跟著游標，不論游標是誰移動的。
 @MainActor
 final class CursorHalo: NSObject {
@@ -11,6 +11,9 @@ final class CursorHalo: NSObject {
     private let ring = CALayer()
     /// 游標尖端上方的兩根手指，箭頭在尖端右下方，不會擋住。
     private let fingers = CALayer()
+    /// 換方向的進度。
+    private let arc = CAShapeLayer()
+    private var stroke: Scroller.Stroke?
     private lazy var window: NSWindow = {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: Self.size, height: Self.size), styleMask: .borderless, backing: .buffered, defer: false
@@ -43,6 +46,13 @@ final class CursorHalo: NSObject {
         }
         fingers.isHidden = true
         view.layer?.addSublayer(fingers)
+        arc.frame = view.bounds
+        arc.path = CGPath(ellipseIn: view.bounds.insetBy(dx: 7, dy: 7), transform: nil)
+        arc.fillColor = nil
+        arc.strokeColor = NSColor.systemOrange.cgColor
+        arc.lineWidth = 3
+        arc.isHidden = true
+        view.layer?.addSublayer(arc)
         window.contentView = view
         return window
     }()
@@ -54,7 +64,7 @@ final class CursorHalo: NSObject {
 
     func show(_ state: ControlState) {
         ring.removeAllAnimations()
-        showScrolling(nil)
+        showScrolling(nil, switching: nil)
         switch state {
         case .idle:
             link.isPaused = true
@@ -77,7 +87,14 @@ final class CursorHalo: NSObject {
         window.orderFrontRegardless()
     }
 
-    func showScrolling(_ stroke: Scroller.Stroke?) {
+    func showScrolling(_ stroke: Scroller.Stroke?, switching: Double?) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        arc.isHidden = switching == nil
+        arc.strokeEnd = switching ?? 0
+        CATransaction.commit()
+        guard stroke != self.stroke else { return }
+        self.stroke = stroke
         fingers.removeAllAnimations()
         fingers.isHidden = stroke == nil
         guard let stroke else { return }

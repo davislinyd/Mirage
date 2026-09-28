@@ -10,6 +10,14 @@ final class SpikeController: NSObject, NSApplicationDelegate {
     private var camera = ""
     private var mapper = ScreenMapper(screenWidth: 1440, screenHeight: 900)
     private var resultsWritten = false
+    private let script: Script
+    /// 指定的相機格式；nil 時同 App。
+    private let size: (width: Int32, height: Int32)?
+
+    init(script: Script, size: (width: Int32, height: Int32)?) {
+        self.script = script
+        self.size = size
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let size = NSScreen.main?.frame.size {
@@ -22,17 +30,17 @@ final class SpikeController: NSObject, NSApplicationDelegate {
             guard await AVCaptureDevice.requestAccess(for: .video) else {
                 fail("沒有相機權限：到「系統設定 → 隱私權與安全性 → 相機」允許執行本工具的終端機 App，再重新執行。")
             }
-            let capture = HandCapture(mapper: mapper) { [weak self] event in
+            let capture = HandCapture(mapper: mapper, script: script) { [weak self] event in
                 self?.handle(event)
             }
             do {
-                camera = try capture.start()
+                camera = try capture.start(size: size)
             } catch {
                 fail("相機啟動失敗：\(error)")
             }
             self.capture = capture
             print(camera)
-            print("接下來依序有 \(Phase.allCases.count) 個階段，共約 \(Int(Phase.totalDuration)) 秒，照視窗提示做即可；關閉視窗會提前結束。")
+            print("接下來依序有 \(script.phases.count) 個階段，共約 \(Int(script.totalDuration)) 秒，照視窗提示做即可；關閉視窗會提前結束。")
         }
     }
 
@@ -62,6 +70,7 @@ final class SpikeController: NSObject, NSApplicationDelegate {
         resultsWritten = true
         let (frames, dropped, skipped) = capture.stop()
         let summary = Summary.text(
+            script: script,
             camera: camera,
             dropped: dropped,
             skipped: skipped,
@@ -69,7 +78,7 @@ final class SpikeController: NSObject, NSApplicationDelegate {
         )
         print(summary)
         do {
-            let url = try Summary.save(frames: frames, summary: summary)
+            let url = try Summary.save(frames: frames, summary: summary, script: script)
             print("\n紀錄已存到 \(url.path)")
         } catch {
             print("\n寫入紀錄失敗：\(error)")
@@ -83,7 +92,7 @@ final class SpikeController: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Mirage M0"
+        window.title = "Mirage \(script.name)"
         window.isReleasedWhenClosed = false
         window.contentView = view
         window.center()

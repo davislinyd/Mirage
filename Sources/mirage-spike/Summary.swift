@@ -2,10 +2,10 @@ import Foundation
 import MirageCore
 
 enum Summary {
-    static func text(camera: String, dropped: Int, skipped: Int, reports: [PhaseReport]) -> String {
+    static func text(script: Script, camera: String, dropped: Int, skipped: Int, reports: [PhaseReport]) -> String {
         let pinch = PinchDetector()
         var lines = [
-            "", "===== Mirage M0.2 結果 =====", camera,
+            "", "===== Mirage \(script.name) 結果 =====", camera,
             "丟幀：\(dropped)（同步推論來不及，被相機丟棄的影格）",
             "略過：\(skipped)（非同步推論忙碌時，被較新影格取代的影格）",
         ]
@@ -24,15 +24,15 @@ enum Summary {
                 lines.append("  喚醒 \(report.wakeCount) 次（應為 5）")
             case .daily:
                 lines.append("  誤觸：點擊 \(report.clickCount) 次、喚醒 \(report.wakeCount) 次")
-            case .warmup, .latency:
+            default:
                 break
             }
         }
         return lines.joined(separator: "\n")
     }
 
-    /// 把每幀紀錄（JSONL）與摘要存到 `recordings/`，回傳 JSONL 路徑。
-    static func save(frames: [FrameRecord], summary: String) throws -> URL {
+    /// 把每幀紀錄（JSONL）與摘要存到 `recordings/`，檔名以腳本名稱開頭，回傳 JSONL 路徑。
+    static func save(frames: [FrameRecord], summary: String, script: Script) throws -> URL {
         let directory = URL.currentDirectory().appending(path: "recordings")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
@@ -42,9 +42,9 @@ enum Summary {
             data.append(try encoder.encode(frame))
             data.append(0x0A)
         }
-        let url = directory.appending(path: "m0-\(stamp).jsonl")
+        let url = directory.appending(path: "\(script.name)-\(stamp).jsonl")
         try data.write(to: url)
-        try Data(summary.utf8).write(to: directory.appending(path: "m0-\(stamp).txt"))
+        try Data(summary.utf8).write(to: directory.appending(path: "\(script.name)-\(stamp).txt"))
         return url
     }
 

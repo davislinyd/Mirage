@@ -55,6 +55,13 @@ public struct ControlStateMachine: Sendable {
     public mutating func reset() {
         state = .idle
     }
+
+    /// 錄影重播用：略過喚醒，直接進入 Active。
+    mutating func activate(at t: Double) {
+        state = .active
+        lastSeen = t
+        lastInside = t
+    }
 }
 
 /// 主要手 → 啟用狀態 → 游標位置（螢幕 pt，原點左下）、左右鍵與捲動。只有 Active 時輸出。
@@ -62,20 +69,25 @@ public struct CursorController: Sendable {
     public struct Output: Sendable {
         public var state: ControlState
         public var cursor: Vec2?
-        public var button: PinchClicker.Button?
+        public var button: TriggerClicker.Button?
         /// 這一幀要捲動的 pt，指尖往上為正，內容跟著指尖移動。
         public var scroll: Double?
         /// 右鍵單擊。
         public var rightClick = false
         /// 兩指捲動中（游標停住）時為會捲動的那一下，否則為 nil。
         public var scrolling: Scroller.Stroke?
+        /// 捲動中換起點的進度（`Scroller.switching`）。
+        public var switching: Double?
+        /// 食指尖比指根高出幾個掌寬，供動作紀錄查捲動。
+        public var rise: Double?
     }
 
     public let calibration: Calibration
     public let screenWidth: Double
     public let screenHeight: Double
     /// 掌寬須在校準值的此範圍內才算數。側手、離太遠或太近的手，以及背後旁人的手，量到的掌寬都會明顯偏離。
-    public var palmRange = 0.6...1.4
+    /// 手放低時，校準畫圈時手掌斜著、量到的較小，做手勢時正對鏡頭可到 1.44 倍，所以上限放寬到 1.6。
+    public var palmRange = 0.6...1.6
     /// 量不到掌寬時，沿用此秒數內最近一次量到的值（同 `GestureProbe.palmHold`）。
     public var palmHold = 0.2
     /// 手消失超過此秒數後重置濾波器，避免游標從舊位置慢慢滑過去。
@@ -89,10 +101,10 @@ public struct CursorController: Sendable {
 
     private var machine = ControlStateMachine()
     private var wake = WakeDetector()
-    private var clicker = PinchClicker()
+    private var clicker = TriggerClicker()
     private var scroller = Scroller()
-    /// 兩指捲動時的拇指–食指捏合 = 右鍵。
-    private var secondary = PinchClickDetector()
+    /// 兩指捲動時的扳機 = 右鍵。
+    private var secondary = TriggerDetector()
     /// 上一幀輸出的游標。
     private var lastCursor: Vec2?
     /// 最後一次只有食指指向時輸出的游標。
@@ -146,7 +158,7 @@ public struct CursorController: Sendable {
             cursor = clamp(Vec2(x: filtered.x + velocity.x * lead, y: filtered.y + velocity.y * lead))
         }
         guard state == .active else {
-            clicker = PinchClicker()
+            clicker = TriggerClicker()
             scroller = Scroller()
             held = nil
             return Output(state: state, cursor: nil)
@@ -157,22 +169,24 @@ public struct CursorController: Sendable {
             rise = (tip.y - knuckle.y) * Double(height) / palm
         }
         let scroll = scroller.update(twoFingers: twoFingers, pointing: pointing, height: rise, at: t)
-        // 用沿用的掌寬：捏合時拇指常擋住食指根部。
-        var ratio: Double?
-        if sized, let palm, let gap = geometry?.distance(.thumbTip, .indexTip) { ratio = gap / palm }
+        // 扳機：拇指尖到食指 PIP。用沿用的掌寬：拇指壓下時常擋住食指根部。
+        var distance: Double?
+        if sized, let palm, let gap = geometry?.distance(.thumbTip, .indexPIP) { distance = gap / palm }
+        let posed = [1, 2].contains { geometry?.isPointing(palmWidth: palm ?? 0, fingers: $0) == true }
         if scroller.isScrolling {
-            clicker = PinchClicker()
+            clicker = TriggerClicker()
             if held == nil { held = pointed.flatMap { t - $0.t <= pointMemory ? $0.cursor : nil } ?? lastCursor }
-            // 同觸控板的兩指點按。彎成拳頭時拇指也會貼著食指，但食指尖低於 `bent`；量不到時不擋。
-            let rightClick = secondary.update(ratio: ratio, valid: sized && (rise ?? .infinity) >= scroller.bent)
-            return Output(state: state, cursor: held, scroll: scroll, rightClick: rightClick, scrolling: scroller.stroke)
+            // 同觸控板的兩指點按。
+            let rightClick = secondary.update(distance: distance, rise: rise, posed: posed, at: t) && sized
+            return Output(
+                state: state, cursor: held, scroll: scroll, rightClick: rightClick, scrolling: scroller.stroke,
+                switching: scroller.switching, rise: rise
+            )
         }
-        secondary = PinchClickDetector()
+        secondary = TriggerDetector()
         held = nil
-        // 食指彎曲代表握拳或拿東西，不是捏合；關節不確定時不擋，以免漏掉真的捏合。
         let click = clicker.update(
-            cursor: cursor, ratio: ratio, anchor: sized ? geometry?.normalized(.indexMCP) : nil,
-            valid: sized && geometry?.indexCurled != true, at: t
+            cursor: cursor, distance: distance, rise: rise, posed: posed, anchor: knuckle, valid: sized, at: t
         )
         lastCursor = click.cursor
         if pointing, let shown = click.cursor { pointed = (shown, t) }
@@ -182,6 +196,11 @@ public struct CursorController: Sendable {
     /// 快捷鍵、螢幕鎖定等外部原因停用：回到 Idle，須重新喚醒。
     public mutating func deactivate() {
         machine.reset()
+    }
+
+    /// 錄影重播用：略過喚醒，直接進入 Active。
+    mutating func activate(at t: Double) {
+        machine.activate(at: t)
     }
 
     private func isInside(_ p: Vec2) -> Bool {

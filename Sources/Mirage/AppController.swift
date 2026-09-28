@@ -73,6 +73,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             ready = true
+            // 換了相機格式，舊的校準不適用。
+            if let calibration, let size = tracker.frameSize, calibration.width != size.width || calibration.height != size.height {
+                self.calibration = nil
+                tracker.use(nil)
+            }
             if calibration == nil {
                 recalibrate()
             } else {
@@ -120,8 +125,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .state(let state):
             self.state = state
             halo.show(state)
-        case .scrolling(let scrolling):
-            halo.showScrolling(scrolling)
+        case .scrolling(let stroke, let switching):
+            halo.showScrolling(stroke, switching: switching)
         case .calibration(let progress):
             // 取消後仍可能收到幾幀已排隊的進度。
             guard calibrating else { return }

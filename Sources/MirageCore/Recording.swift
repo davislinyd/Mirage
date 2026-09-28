@@ -1,6 +1,7 @@
-/// M0 引導流程的各階段，每個階段量測一項可行性風險。
+/// 錄影的各階段。M0 引導流程的每個階段量測一項可行性風險；手勢腳本錄下候選手勢，供重播調參。
 public enum Phase: String, CaseIterable, Codable, Sendable {
     case warmup, latency, still, move, pinch, wake, daily
+    case trigger, triggerHold, twoFingerTrigger, halfBend, reverseBend, fist
 
     /// 準備階段不計時：手連續入鏡 1 秒後才開始倒數，避免手還沒就定位就開始量測。
     public var duration: Double {
@@ -9,7 +10,8 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
         case .latency: 32
         case .still: 5
         case .move, .pinch, .wake: 10
-        case .daily: 15
+        case .triggerHold, .halfBend, .fist: 12
+        case .daily, .trigger, .twoFingerTrigger, .reverseBend: 15
         }
     }
 
@@ -22,6 +24,12 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
         case .pinch: "捏合"
         case .wake: "喚醒"
         case .daily: "日常"
+        case .trigger: "扳機點擊"
+        case .triggerHold: "扳機按住"
+        case .twoFingerTrigger: "兩指扳機"
+        case .halfBend: "半彎捲動"
+        case .reverseBend: "反向捲動"
+        case .fist: "握拳"
         }
     }
 
@@ -34,17 +42,37 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
         case .pinch: "拇指與食指捏合再放開，剛好 10 次"
         case .wake: "張手 → 握拳，剛好 5 次"
         case .daily: "自然動作：放下手、抓頭、喝水、打字"
+        case .trigger: "伸出食指、拇指豎起（比手槍），拇指往下壓到食指側面再抬起，10 次；食指盡量不動"
+        case .triggerHold: "同上，拇指壓住約 1 秒再抬起，5 次"
+        case .twoFingerTrigger: "食指與中指伸直、拇指豎起，拇指往下壓到食指側面再抬起，10 次"
+        case .halfBend: "食指與中指伸直，像平常捲動一樣彎一半再伸直，10 下"
+        case .reverseBend: "食指與中指彎一半停約 1 秒，再伸直一下、彎回原處，5 次"
+        case .fist: "食指與中指伸直 → 握拳 → 伸直，10 次"
         }
     }
+}
 
-    public static var totalDuration: Double {
-        allCases.reduce(0) { $0 + $1.duration }
+/// 錄影腳本：依序進行的階段。
+public struct Script: Sendable {
+    public let name: String
+    public let phases: [Phase]
+
+    /// M0 可行性驗證。
+    public static let m0 = Script(name: "m0", phases: [.warmup, .latency, .still, .move, .pinch, .wake, .daily])
+    /// 候選手勢。`move` 階段供重播時校準。
+    public static let gestures = Script(
+        name: "gestures", phases: [.warmup, .move, .trigger, .triggerHold, .twoFingerTrigger, .halfBend, .reverseBend, .fist, .daily]
+    )
+    public static let all = [m0, gestures]
+
+    public var totalDuration: Double {
+        phases.reduce(0) { $0 + $1.duration }
     }
 
     /// 依開始後經過的秒數回傳當前階段與剩餘秒數；流程結束回傳 nil。
-    public static func at(elapsed: Double) -> (phase: Phase, remaining: Double)? {
+    public func at(elapsed: Double) -> (phase: Phase, remaining: Double)? {
         var end = 0.0
-        for phase in allCases {
+        for phase in phases {
             end += phase.duration
             if elapsed < end { return (phase, end - elapsed) }
         }

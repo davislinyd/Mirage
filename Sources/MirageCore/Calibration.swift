@@ -6,13 +6,20 @@ public struct Calibration: Codable, Sendable, Equatable {
     public var minY: Double
     public var maxX: Double
     public var maxY: Double
+    /// 校準時的影像寬高（像素）。換了相機格式，正規化座標與掌寬都不再適用；較早的校準沒有這兩個欄位。
+    public var width: Int?
+    public var height: Int?
 
-    public init(palmWidth: Double, minX: Double, minY: Double, maxX: Double, maxY: Double) {
+    public init(
+        palmWidth: Double, minX: Double, minY: Double, maxX: Double, maxY: Double, width: Int? = nil, height: Int? = nil
+    ) {
         self.palmWidth = palmWidth
         self.minX = minX
         self.minY = minY
         self.maxX = maxX
         self.maxY = maxY
+        self.width = width
+        self.height = height
     }
 }
 
@@ -88,6 +95,8 @@ public struct CalibrationSession: Sendable {
             tips = []
             return .tooSmall
         }
-        return .done(Calibration(palmWidth: palmWidth, minX: minX, minY: minY, maxX: maxX, maxY: maxY))
+        return .done(Calibration(
+            palmWidth: palmWidth, minX: minX, minY: minY, maxX: maxX, maxY: maxY, width: width, height: height
+        ))
     }
 }
