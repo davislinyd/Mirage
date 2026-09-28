@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import Carbon.HIToolbox
 import CoreGraphics
 import OSLog
 @preconcurrency import Vision
@@ -14,8 +15,8 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
 
     enum Event: Sendable {
         case state(ControlState)
-        /// 兩指捲動開始、結束、換成另一端起點，或換起點的進度改變（`switching`，未顯示時為 nil）。
-        case scrolling(Scroller.Stroke?, switching: Double?)
+        /// 捲動開始、結束或換方向。
+        case scrolling(Scroller.Direction?)
         case calibration(CalibrationSession.Progress)
     }
 
@@ -68,7 +69,7 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private var waiting: Pending?
     private var mode = Mode.waiting
     private var state = ControlState.idle
-    private var scrolling: (stroke: Scroller.Stroke?, switching: Double?) = (nil, nil)
+    private var scrolling: Scroller.Direction?
     /// 已送出左鍵按下、還沒送出放開。
     private var pressed = false
 
@@ -218,13 +219,17 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
                     rightClick(at: cursor)
                 }
             }
+            if output.escape {
+                Self.log.notice("escape")
+                pressEscape()
+            }
             if output.scrolling != nil, let rise = output.rise { Self.log.info("rise \(rise, format: .fixed(precision: 2))") }
             if let scroll = output.scroll {
                 Self.log.notice("scroll \(scroll, format: .fixed(precision: 0))")
                 send(scroll: scroll)
             }
             publish(output.state)
-            publish(scrolling: output.scrolling, switching: output.switching)
+            publish(scrolling: output.scrolling)
         }
     }
 
@@ -233,13 +238,19 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     }
 
     /// 按著左鍵時移動要送拖曳事件。
-    private func post(_ button: TriggerClicker.Button?, at cursor: Vec2) {
+    private func post(_ button: TapClicker.Button?, at cursor: Vec2) {
         let type: CGEventType = switch button {
         case .down: .leftMouseDown
         case .up: .leftMouseUp
         case nil: pressed ? .leftMouseDragged : .mouseMoved
         }
         send(type, at: point(cursor))
+    }
+
+    private func pressEscape() {
+        for down in [true, false] {
+            CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_Escape), keyDown: down)?.post(tap: .cghidEventTap)
+        }
     }
 
     /// 右鍵按下後立刻放開：選單在按下時打開，放開後保持打開。
@@ -299,18 +310,16 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private func publish(_ state: ControlState) {
         guard state != self.state else { return }
         self.state = state
-        scrolling = (nil, nil)
+        scrolling = nil
         Self.log.notice("state \(String(describing: state), privacy: .public)")
         emit(.state(state))
     }
 
-    /// 換起點的進度停住超過約 0.5 秒（4 成）才顯示，一般捲動兩下之間的停頓不會閃；以一成為單位通知，避免每幀都送。
-    private func publish(scrolling stroke: Scroller.Stroke?, switching: Double?) {
-        let shown = switching.flatMap { $0 >= 0.4 ? ($0 * 10).rounded(.down) / 10 : nil }
-        guard stroke != scrolling.stroke || shown != scrolling.switching else { return }
-        if stroke != scrolling.stroke { Self.log.notice("scrolling \(stroke.map { String(describing: $0) } ?? "off", privacy: .public)") }
-        scrolling = (stroke, shown)
-        emit(.scrolling(stroke, switching: shown))
+    private func publish(scrolling: Scroller.Direction?) {
+        guard scrolling != self.scrolling else { return }
+        Self.log.notice("scrolling \(scrolling.map { String(describing: $0) } ?? "off", privacy: .public)")
+        self.scrolling = scrolling
+        emit(.scrolling(scrolling))
     }
 
     private func emit(_ event: Event) {

@@ -45,6 +45,17 @@ final class SkeletonView: NSView {
         )).stroke()
 
         guard let snapshot else { return }
+        for target in targets(snapshot) {
+            NSColor.systemYellow.setStroke()
+            let cross = NSBezierPath()
+            cross.lineWidth = 2
+            let p = point(target)
+            cross.move(to: NSPoint(x: p.x - 10, y: p.y))
+            cross.line(to: NSPoint(x: p.x + 10, y: p.y))
+            cross.move(to: NSPoint(x: p.x, y: p.y - 10))
+            cross.line(to: NSPoint(x: p.x, y: p.y + 10))
+            cross.stroke()
+        }
         for (index, joints) in snapshot.hands.enumerated() {
             let color = index == snapshot.primary ? Self.accent : NSColor.gray
             color.set()
@@ -83,6 +94,24 @@ final class SkeletonView: NSView {
             in: NSRect(x: 20, y: bounds.height - 110, width: bounds.width - 40, height: 100),
             withAttributes: [.font: NSFont.systemFont(ofSize: 20, weight: .medium), .foregroundColor: NSColor.white]
         )
+    }
+
+    /// 懸停階段每 1/3 換一個十字；慢速對準階段同時顯示兩個；移過去點擊、右鍵時每 3 秒換一個。座標在感應區內。
+    private func targets(_ snapshot: SkeletonSnapshot) -> [Vec2] {
+        let spots = [Vec2(x: 0.42, y: 0.5), Vec2(x: 0.58, y: 0.55), Vec2(x: 0.5, y: 0.42)]
+        switch snapshot.phase {
+        case .hover:
+            let elapsed = snapshot.phase.duration - (snapshot.remaining ?? snapshot.phase.duration)
+            return [spots[min(2, Int(elapsed / (snapshot.phase.duration / 3)))]]
+        case .precise:
+            return [Vec2(x: 0.46, y: 0.5), Vec2(x: 0.54, y: 0.5)]
+        case .moveAndTap, .moveAndTrigger:
+            let jumps = [Vec2(x: 0.38, y: 0.6), Vec2(x: 0.62, y: 0.42), Vec2(x: 0.45, y: 0.4), Vec2(x: 0.6, y: 0.62)]
+            let elapsed = snapshot.phase.duration - (snapshot.remaining ?? snapshot.phase.duration)
+            return [jumps[Int(elapsed / 3) % jumps.count]]
+        default:
+            return []
+        }
     }
 
     private func point(_ p: Vec2) -> NSPoint {

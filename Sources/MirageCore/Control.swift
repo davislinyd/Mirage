@@ -69,15 +69,15 @@ public struct CursorController: Sendable {
     public struct Output: Sendable {
         public var state: ControlState
         public var cursor: Vec2?
-        public var button: TriggerClicker.Button?
+        public var button: TapClicker.Button?
         /// 這一幀要捲動的 pt，指尖往上為正，內容跟著指尖移動。
         public var scroll: Double?
-        /// 右鍵單擊。
+        /// 右鍵單擊：只伸食指時的扳機。
         public var rightClick = false
-        /// 兩指捲動中（游標停住）時為會捲動的那一下，否則為 nil。
-        public var scrolling: Scroller.Stroke?
-        /// 捲動中換起點的進度（`Scroller.switching`）。
-        public var switching: Double?
+        /// 按一下 ESC：兩指捲動時的扳機。
+        public var escape = false
+        /// 捲動中（游標停住）時為彎手指時內容移動的方向，否則為 nil。
+        public var scrolling: Scroller.Direction?
         /// 食指尖比指根高出幾個掌寬，供動作紀錄查捲動。
         public var rise: Double?
     }
@@ -98,13 +98,20 @@ public struct CursorController: Sendable {
     public var lead = 0.033
     /// 開始捲動時，游標回到此秒數內最後一次只有食指指向時的位置：伸直中指時食指尖也會跟著動。
     public var pointMemory = 0.5
+    /// 掌寬／秒：手掌速度低於此值，拇指扳機才算右鍵。移動游標時拇指也會晃，錄影中每 10 秒約誤觸 1 次；但扳機時
+    /// 整隻手也會跟著動，比按鍵點擊時快：0.3 會漏掉大半，0.8 只漏 3/41 下，移動時誤觸剩 1/2。
+    public var rightClickStillSpeed = 0.8
 
     private var machine = ControlStateMachine()
     private var wake = WakeDetector()
-    private var clicker = TriggerClicker()
+    private var clicker = TapClicker()
     private var scroller = Scroller()
-    /// 兩指捲動時的扳機 = 右鍵。
-    private var secondary = TriggerDetector()
+    /// 只伸食指時的扳機 = 右鍵。
+    private var rightTrigger = TriggerDetector()
+    /// 右鍵扳機期間、最近 `TriggerDetector.window` 秒內的拇指距離與游標，點在拇指開始動之前的位置。
+    private var triggerCursors: [(t: Double, distance: Double, cursor: Vec2)] = []
+    /// 兩指捲動時的扳機 = ESC。
+    private var escapeTrigger = TriggerDetector()
     /// 上一幀輸出的游標。
     private var lastCursor: Vec2?
     /// 最後一次只有食指指向時輸出的游標。
@@ -113,6 +120,8 @@ public struct CursorController: Sendable {
     private var held: Vec2?
     /// 最近一次兩指伸直時，食指尖減食指根部（正規化座標）。
     private var reach: Vec2?
+    /// 分辨顫抖與移動，參數可調。
+    public var stabilizer = PointerStabilizer()
     private var filter = OneEuroFilter2D()
     private var velocity = Vec2(x: 0, y: 0)
     private var last: (point: Vec2, t: Double)?
@@ -132,24 +141,28 @@ public struct CursorController: Sendable {
         let sized = palm.map { palmRange.contains($0 / calibration.palmWidth) } ?? false
         let woke = wake.update(pose: sized ? geometry?.pose : .other, at: t)
         let tip = sized ? geometry?.normalized(.indexTip) : nil
-        let inside = tip.map { isInside($0) } ?? false
+        // 游標跟著食指 PIP 而不是指尖：按鍵式點擊只彎指尖兩節，PIP 移動只有指尖的約 1/3。
+        let point = sized ? geometry?.normalized(.indexPIP) : nil
+        let inside = point.map { isInside($0) } ?? false
         let pointing = inside && geometry?.isPointing(palmWidth: palm ?? 0) == true
         let knuckle = sized ? geometry?.normalized(.indexMCP) : nil
         let twoFingers = inside && !clicker.isPressed && geometry?.isPointing(palmWidth: palm ?? 0, fingers: 2) == true
-        if twoFingers, let tip, let knuckle { reach = Vec2(x: tip.x - knuckle.x, y: tip.y - knuckle.y) }
-        // 捲動中彎手指時指尖會離開操作範圍，但手沒有離開：改用食指根部加上兩指伸直時的指尖位移判斷。
-        let placed = scroller.isScrolling ? knuckle.flatMap { k in reach.map { Vec2(x: k.x + $0.x, y: k.y + $0.y) } } : tip
+        let threeFingers = inside && !clicker.isPressed && geometry?.isPointing(palmWidth: palm ?? 0, fingers: 3) == true
+        if twoFingers || threeFingers, let point, let knuckle { reach = Vec2(x: point.x - knuckle.x, y: point.y - knuckle.y) }
+        // 捲動中彎手指時 PIP 會離開操作範圍，但手沒有離開：改用食指根部加上手指伸直時的 PIP 位移判斷。
+        let placed = scroller.isScrolling ? knuckle.flatMap { k in reach.map { Vec2(x: k.x + $0.x, y: k.y + $0.y) } } : point
         let state = machine.update(
-            woke: woke, pointing: pointing, visible: tip != nil, inside: placed.map { isInside($0) } ?? false, at: t
+            woke: woke, pointing: pointing, visible: point != nil, inside: placed.map { isInside($0) } ?? false, at: t
         )
         var cursor: Vec2?
-        if let tip {
+        if let point {
             if let last, t - last.t > resetGap {
                 filter.reset()
                 velocity = Vec2(x: 0, y: 0)
                 self.last = nil
             }
-            let filtered = filter(map(tip), at: t)
+            let steady = stabilizer.update(point, width: width, height: height, scale: calibration.palmWidth, at: t)
+            let filtered = filter(map(steady), at: t)
             if let last, t > last.t {
                 velocity.x += 0.5 * ((filtered.x - last.point.x) / (t - last.t) - velocity.x)
                 velocity.y += 0.5 * ((filtered.y - last.point.y) / (t - last.t) - velocity.y)
@@ -158,7 +171,7 @@ public struct CursorController: Sendable {
             cursor = clamp(Vec2(x: filtered.x + velocity.x * lead, y: filtered.y + velocity.y * lead))
         }
         guard state == .active else {
-            clicker = TriggerClicker()
+            clicker = TapClicker()
             scroller = Scroller()
             held = nil
             return Output(state: state, cursor: nil)
@@ -168,29 +181,47 @@ public struct CursorController: Sendable {
         if let tip, let palm, let knuckle {
             rise = (tip.y - knuckle.y) * Double(height) / palm
         }
-        let scroll = scroller.update(twoFingers: twoFingers, pointing: pointing, height: rise, at: t)
+        let scroll = scroller.update(twoFingers: twoFingers, threeFingers: threeFingers, pointing: pointing, height: rise, at: t)
         // 扳機：拇指尖到食指 PIP。用沿用的掌寬：拇指壓下時常擋住食指根部。
         var distance: Double?
         if sized, let palm, let gap = geometry?.distance(.thumbTip, .indexPIP) { distance = gap / palm }
         let posed = [1, 2].contains { geometry?.isPointing(palmWidth: palm ?? 0, fingers: $0) == true }
         if scroller.isScrolling {
-            clicker = TriggerClicker()
+            clicker = TapClicker()
+            rightTrigger = TriggerDetector()
+            triggerCursors = []
             if held == nil { held = pointed.flatMap { t - $0.t <= pointMemory ? $0.cursor : nil } ?? lastCursor }
-            // 同觸控板的兩指點按。
-            let rightClick = secondary.update(distance: distance, rise: rise, posed: posed, at: t) && sized
+            let escape = escapeTrigger.update(distance: distance, rise: rise, posed: posed, at: t) && sized
             return Output(
-                state: state, cursor: held, scroll: scroll, rightClick: rightClick, scrolling: scroller.stroke,
-                switching: scroller.switching, rise: rise
+                state: state, cursor: held, scroll: scroll, escape: escape, scrolling: scroller.direction, rise: rise
             )
         }
-        secondary = TriggerDetector()
+        escapeTrigger = TriggerDetector()
         held = nil
+        // 按鍵時食指會彎，食指尖只要仍高於指根就算指向姿勢。
+        let tapPosed = geometry?.isPointing(palmWidth: palm ?? 0, up: 0.2) == true
+        // 除以固定的校準掌寬：每幀量到的掌寬有約 5% 的雜訊，拿它換算位置，速度會多出約 0.7 掌寬／秒。
+        let scale = calibration.palmWidth
+        let palmPoint = sized ? geometry?.palmCenter.map { Vec2(x: $0.x / scale, y: $0.y / scale) } : nil
         let click = clicker.update(
-            cursor: cursor, distance: distance, rise: rise, posed: posed, anchor: knuckle, valid: sized, at: t
+            cursor: cursor, flex: sized ? geometry?.indexFlex : nil, posed: tapPosed, palm: palmPoint, valid: sized, at: t
         )
+        // 右鍵：拇指壓下時食指也會動，點在最近 `window` 秒內拇指距離最大那一幀（開始動之前）的游標位置。
+        let straight = posed && (rise ?? rightTrigger.straight) >= rightTrigger.straight
+        if !straight {
+            triggerCursors = []
+        } else if let distance, let cursor {
+            triggerCursors.append((t, distance, cursor))
+        }
+        triggerCursors.removeAll { t - $0.t > rightTrigger.window }
+        let still = (clicker.palmSpeed ?? .infinity) < rightClickStillSpeed
+        let rightClick = rightTrigger.update(distance: distance, rise: rise, posed: posed, at: t) && sized && still
+        let top = triggerCursors.map(\.distance).max()
+        let rightAt = rightClick ? triggerCursors.last(where: { $0.distance == top })?.cursor : nil
+        if rightClick { triggerCursors = [] }
         lastCursor = click.cursor
         if pointing, let shown = click.cursor { pointed = (shown, t) }
-        return Output(state: state, cursor: click.cursor, button: click.button, scroll: scroll)
+        return Output(state: state, cursor: rightAt ?? click.cursor, button: click.button, scroll: scroll, rightClick: rightClick)
     }
 
     /// 快捷鍵、螢幕鎖定等外部原因停用：回到 Idle，須重新喚醒。

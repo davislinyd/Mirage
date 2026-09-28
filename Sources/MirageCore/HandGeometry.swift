@@ -1,3 +1,5 @@
+import Foundation
+
 public enum HandPose: Sendable, Equatable {
     case open, fist, other
 }
@@ -25,6 +27,30 @@ public struct HandGeometry: Sendable {
     public func distance(_ a: Joint, _ b: Joint) -> Double? {
         guard let p = normalized(a), let q = normalized(b) else { return nil }
         return Vec2(x: p.x * width, y: p.y * height).distance(to: Vec2(x: q.x * width, y: q.y * height))
+    }
+
+    /// 關節的像素座標。
+    public func pixel(_ joint: Joint) -> Vec2? {
+        normalized(joint).map { Vec2(x: $0.x * width, y: $0.y * height) }
+    }
+
+    /// 食指 PIP 與 DIP 兩個關節在畫面上的彎曲角度相加（度），伸直為 0。按鍵式點擊只彎這兩節。
+    public var indexFlex: Double? {
+        guard let m = pixel(.indexMCP), let p = pixel(.indexPIP), let d = pixel(.indexDIP), let t = pixel(.indexTip) else { return nil }
+        func bend(_ a: Vec2, _ b: Vec2, _ c: Vec2) -> Double {
+            let u = Vec2(x: a.x - b.x, y: a.y - b.y), v = Vec2(x: c.x - b.x, y: c.y - b.y)
+            let length = (u.x * u.x + u.y * u.y).squareRoot() * (v.x * v.x + v.y * v.y).squareRoot()
+            guard length > 0 else { return 0 }
+            return 180 - acos(max(-1, min(1, (u.x * v.x + u.y * v.y) / length))) * 180 / .pi
+        }
+        return bend(m, p, d) + bend(p, d, t)
+    }
+
+    /// 四個指根的中心（像素），代表手掌的位置。
+    public var palmCenter: Vec2? {
+        let knuckles = [Joint.indexMCP, .middleMCP, .ringMCP, .littleMCP].compactMap { pixel($0) }
+        guard knuckles.count == 4 else { return nil }
+        return Vec2(x: knuckles.reduce(0) { $0 + $1.x } / 4, y: knuckles.reduce(0) { $0 + $1.y } / 4)
     }
 
     /// 食指根部到小指根部的距離，作為手部尺度。

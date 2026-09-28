@@ -1,5 +1,8 @@
-/// 使用者的操作範圍與手的大小，由校準取得。範圍是正規化影像座標（0...1，原點左下，未鏡像）。
+/// 使用者的操作範圍與手的大小，由校準取得。範圍是食指 PIP 的正規化影像座標（0...1，原點左下，未鏡像）。
 public struct Calibration: Codable, Sendable, Equatable {
+    /// 目前的校準方式。2：範圍改量食指 PIP（游標跟著 PIP）；較早的校準量指尖、沒有版本。
+    public static let currentVersion = 2
+
     /// 操作時的掌寬（像素），手勢閘門以此為基準。
     public var palmWidth: Double
     public var minX: Double
@@ -9,9 +12,11 @@ public struct Calibration: Codable, Sendable, Equatable {
     /// 校準時的影像寬高（像素）。換了相機格式，正規化座標與掌寬都不再適用；較早的校準沒有這兩個欄位。
     public var width: Int?
     public var height: Int?
+    public var version: Int?
 
     public init(
-        palmWidth: Double, minX: Double, minY: Double, maxX: Double, maxY: Double, width: Int? = nil, height: Int? = nil
+        palmWidth: Double, minX: Double, minY: Double, maxX: Double, maxY: Double, width: Int? = nil, height: Int? = nil,
+        version: Int? = Calibration.currentVersion
     ) {
         self.palmWidth = palmWidth
         self.minX = minX
@@ -20,11 +25,12 @@ public struct Calibration: Codable, Sendable, Equatable {
         self.maxY = maxY
         self.width = width
         self.height = height
+        self.version = version
     }
 }
 
 /// 校準流程：使用者伸出食指，在舒適範圍內畫大圈。看得到食指指向的時間先倒數 `countdown` 秒，讓使用者看完說明、
-/// 準備好；再累計 `duration` 秒後，取掌寬中位數與食指尖位置的 5–95% 範圍：去掉偶發的極端值，也讓游標不必把手
+/// 準備好；再累計 `duration` 秒後，取掌寬中位數與食指 PIP 位置的 5–95% 範圍：去掉偶發的極端值，也讓游標不必把手
 /// 伸到最遠就能到達螢幕邊緣。只收指向的幀：掌寬要在實際操作的姿勢與距離量（M0.2 靜止時手較靠近鏡頭，掌寬比移動
 /// 時大 13%），也順便確認這個姿勢認得出來。
 public struct CalibrationSession: Sendable {
@@ -56,7 +62,7 @@ public struct CalibrationSession: Sendable {
     private var elapsed = 0.0
     private var lastT: Double?
     private var palms: [Double] = []
-    private var tips: [Vec2] = []
+    private var points: [Vec2] = []
 
     public init() {}
 
@@ -67,7 +73,7 @@ public struct CalibrationSession: Sendable {
             return .collecting(remaining: remaining, hint: .noHand)
         }
         let geometry = HandGeometry(hand: hand, width: width, height: height)
-        guard let palm = geometry.palmWidth, let tip = geometry.normalized(.indexTip),
+        guard let palm = geometry.palmWidth, let point = geometry.normalized(.indexPIP),
               geometry.isPointing(palmWidth: palm) == true
         else {
             lastT = nil
@@ -77,13 +83,13 @@ public struct CalibrationSession: Sendable {
         lastT = t
         guard elapsed >= countdown else { return .countdown(remaining: countdown - elapsed) }
         palms.append(palm)
-        tips.append(tip)
+        points.append(point)
         guard elapsed >= countdown + duration else {
             return .collecting(remaining: countdown + duration - elapsed, hint: .pointing)
         }
 
-        let xs = tips.map(\.x)
-        let ys = tips.map(\.y)
+        let xs = points.map(\.x)
+        let ys = points.map(\.y)
         guard let palmWidth = SpikeAnalysis.percentile(palms, 0.5),
               let minX = SpikeAnalysis.percentile(xs, 0.05), let maxX = SpikeAnalysis.percentile(xs, 0.95),
               let minY = SpikeAnalysis.percentile(ys, 0.05), let maxY = SpikeAnalysis.percentile(ys, 0.95),
@@ -92,7 +98,7 @@ public struct CalibrationSession: Sendable {
             elapsed = 0
             lastT = nil
             palms = []
-            tips = []
+            points = []
             return .tooSmall
         }
         return .done(Calibration(

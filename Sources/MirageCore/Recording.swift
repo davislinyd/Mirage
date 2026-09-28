@@ -2,6 +2,8 @@
 public enum Phase: String, CaseIterable, Codable, Sendable {
     case warmup, latency, still, move, pinch, wake, daily
     case trigger, triggerHold, twoFingerTrigger, halfBend, reverseBend, fist
+    case hover, precise, sweep, tap, tapHold
+    case moveAndTap, moveAndTrigger, threeFingerBend
 
     /// 準備階段不計時：手連續入鏡 1 秒後才開始倒數，避免手還沒就定位就開始量測。
     public var duration: Double {
@@ -9,9 +11,11 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
         case .warmup: 0
         case .latency: 32
         case .still: 5
-        case .move, .pinch, .wake: 10
-        case .triggerHold, .halfBend, .fist: 12
-        case .daily, .trigger, .twoFingerTrigger, .reverseBend: 15
+        case .move, .pinch, .wake, .hover, .precise: 10
+        case .sweep: 8
+        case .moveAndTap, .moveAndTrigger: 18
+        case .triggerHold, .halfBend, .fist, .tapHold: 12
+        case .daily, .trigger, .twoFingerTrigger, .reverseBend, .tap, .threeFingerBend: 15
         }
     }
 
@@ -30,6 +34,14 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
         case .halfBend: "半彎捲動"
         case .reverseBend: "反向捲動"
         case .fist: "握拳"
+        case .hover: "懸停"
+        case .precise: "慢速對準"
+        case .sweep: "快速移動"
+        case .tap: "按鍵點擊"
+        case .tapHold: "按鍵按住"
+        case .moveAndTap: "移過去點擊"
+        case .moveAndTrigger: "移過去右鍵"
+        case .threeFingerBend: "三指捲動"
         }
     }
 
@@ -48,6 +60,14 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
         case .halfBend: "食指與中指伸直，像平常捲動一樣彎一半再伸直，10 下"
         case .reverseBend: "食指與中指彎一半停約 1 秒，再伸直一下、彎回原處，5 次"
         case .fist: "食指與中指伸直 → 握拳 → 伸直，10 次"
+        case .hover: "伸出食指，讓白圈對準十字、盡量不動；十字會換 3 個位置"
+        case .precise: "讓白圈在兩個十字之間慢慢來回，每次停在十字上"
+        case .sweep: "大範圍快速移動食指，偶爾停下"
+        case .tap: "食指伸直，只彎指尖兩節往下按再伸直（像按按鈕），指根與手掌不動，10 次"
+        case .tapHold: "同上，按下後停約 1 秒再伸直，5 次"
+        case .moveAndTap: "每到一個十字就按鍵一下！十字每 3 秒換位置：把白圈移過去，彎指尖兩節點一下"
+        case .moveAndTrigger: "每到一個十字就扳機一下！十字每 3 秒換位置：把白圈移過去，拇指往下壓一下（右鍵）"
+        case .threeFingerBend: "食指、中指、無名指伸直，小指收起，像平常捲動一樣彎一半再伸直，10 下"
         }
     }
 }
@@ -63,7 +83,17 @@ public struct Script: Sendable {
     public static let gestures = Script(
         name: "gestures", phases: [.warmup, .move, .trigger, .triggerHold, .twoFingerTrigger, .halfBend, .reverseBend, .fist, .daily]
     )
-    public static let all = [m0, gestures]
+    /// 防抖與按鍵式點擊。
+    public static let precision = Script(
+        name: "precision",
+        phases: [.warmup, .move, .hover, .precise, .sweep, .tap, .tapHold, .twoFingerTrigger, .halfBend, .fist, .daily]
+    )
+    /// 實際使用的節奏：移過去就點，以及三指捲動。
+    public static let controls = Script(
+        name: "controls",
+        phases: [.warmup, .move, .moveAndTap, .moveAndTrigger, .twoFingerTrigger, .halfBend, .threeFingerBend, .fist, .daily]
+    )
+    public static let all = [m0, gestures, precision, controls]
 
     public var totalDuration: Double {
         phases.reduce(0) { $0 + $1.duration }
