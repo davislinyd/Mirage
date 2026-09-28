@@ -30,10 +30,18 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         let deliveryMs: Double
         let phase: Phase
         let remaining: Double?
+        /// 畫面上顯示的階段：說明與倒數期間是下一個階段，`phase` 則記錄為準備階段。
+        let shown: Phase
+        /// 說明與倒數期間，距離開始的秒數。
+        let startsIn: Double?
         let config: String?
+        /// 這一幀也偵測臉。
+        let face: Bool
+        /// 注視階段要看的點（螢幕 pt）。
+        let target: Vec2?
     }
 
-    private typealias Detection = (hands: [Hand], inferenceMs: Double, latencyMs: Double)
+    private typealias Detection = (hands: [Hand], face: Face?, inferenceMs: Double, faceMs: Double?, latencyMs: Double)
     private typealias Candidate = (format: AVCaptureDevice.Format, range: AVFrameRateRange, size: CMVideoDimensions)
 
     /// 延遲比較階段依序使用的處理方式。同步：在影格回呼裡等推論完成（M0 的做法），推論偶爾變慢時，
@@ -41,11 +49,14 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private let modes: [(label: String, inline: Bool)] = [
         ("A 同步", true), ("B 非同步", false), ("C 同步（重測 A）", true), ("D 非同步（重測 B）", false),
     ]
+    /// 臉部偵測延遲階段依序使用的處理方式：只偵測手，或同一幀接著偵測臉，比較手的延遲。
+    private let faceModes: [(label: String, face: Bool)] = [("只有手", false), ("手＋臉", true), ("只有手", false), ("手＋臉", true)]
 
     private let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "mirage.capture", qos: .userInteractive)
     private let workQueue = DispatchQueue(label: "mirage.vision", qos: .userInteractive)
     private let request = VNDetectHumanHandPoseRequest()
+    private let faceRequest = VNDetectFaceLandmarksRequest()
     private let jointNames: [VNHumanHandPoseObservation.JointName] = [
         .wrist,
         .thumbCMC, .thumbMP, .thumbIP, .thumbTip,
@@ -67,7 +78,8 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private var clock = CMClockGetHostTimeClock()
     private var probe: GestureProbe
     private var frames: [FrameRecord] = []
-    private var handSince: Double?
+    /// 手（需要偵測臉的腳本為臉）連續入鏡的開始時間。
+    private var readySince: Double?
     private var startTime: Double?
     private var lastPhase: Phase?
     private var finished = false
@@ -176,27 +188,36 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         let t = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
         let deliveryMs = (CMClockGetTime(clock).seconds - t) * 1000
 
-        // 手連續入鏡 1 秒後才開始計時，在那之前都是準備階段。
+        // 手（或臉）連續入鏡 1 秒後才開始計時，在那之前都是準備階段；每個階段開始前的說明與倒數也記錄為準備階段。
         var phase = Phase.warmup
+        var shown = Phase.warmup
         var remaining: Double?
+        var startsIn: Double?
         if let startTime {
             guard let current = script.at(elapsed: t - startTime) else {
                 finished = true
                 emit(.finished)
                 return
             }
-            phase = current.phase
-            remaining = current.remaining
+            shown = current.phase
+            startsIn = current.startsIn
+            if startsIn == nil {
+                phase = current.phase
+                remaining = current.remaining
+            }
         }
-        if phase != lastPhase {
-            lastPhase = phase
-            emit(.phase(phase))
+        if shown != lastPhase {
+            lastPhase = shown
+            emit(.phase(shown))
         }
 
         let latencyMode = mode(phase: phase, remaining: remaining)
+        let faceMode = faceMode(phase: phase, remaining: remaining)
+        let target = remaining.flatMap { GazeTargets.target(phase, elapsed: phase.duration - $0) }
         let pending = Pending(
-            pixelBuffer: pixelBuffer, t: t, deliveryMs: deliveryMs, phase: phase, remaining: remaining,
-            config: latencyMode?.label
+            pixelBuffer: pixelBuffer, t: t, deliveryMs: deliveryMs, phase: phase, remaining: remaining, shown: shown,
+            startsIn: startsIn, config: latencyMode?.label ?? faceMode?.label, face: script.usesFace && faceMode?.face != false,
+            target: target.map { Vec2(x: $0.x * mapper.screenWidth, y: $0.y * mapper.screenHeight) }
         )
         if busy {
             if waiting != nil { skipped += 1 }
@@ -219,6 +240,13 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         return modes[min(modes.count - 1, Int((phase.duration - remaining) / slot))]
     }
 
+    /// 臉部偵測延遲階段依時間輪流使用各處理方式；其餘階段為 nil。
+    private func faceMode(phase: Phase, remaining: Double?) -> (label: String, face: Bool)? {
+        guard phase == .faceLatency, let remaining else { return nil }
+        let slot = phase.duration / Double(faceModes.count)
+        return faceModes[min(faceModes.count - 1, Int((phase.duration - remaining) / slot))]
+    }
+
     private func startDetection(_ pending: Pending) {
         busy = true
         workQueue.async { [self] in
@@ -239,8 +267,17 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         let handler = VNImageRequestHandler(cvPixelBuffer: pending.pixelBuffer, orientation: .up, options: [:])
         try? handler.perform([request])
         let inferenceMs = (ProcessInfo.processInfo.systemUptime - begin) * 1000
+        var face: Face?
+        var faceMs: Double?
+        if pending.face {
+            let faceBegin = ProcessInfo.processInfo.systemUptime
+            try? handler.perform([faceRequest])
+            faceMs = (ProcessInfo.processInfo.systemUptime - faceBegin) * 1000
+            let largest = (faceRequest.results ?? []).max { $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height }
+            face = largest.flatMap { self.face(from: $0) }
+        }
         let latencyMs = (CMClockGetTime(clock).seconds - pending.t) * 1000
-        return ((request.results ?? []).compactMap { hand(from: $0) }, inferenceMs, latencyMs)
+        return ((request.results ?? []).compactMap { hand(from: $0) }, face, inferenceMs, faceMs, latencyMs)
     }
 
     private func finish(_ pending: Pending, _ detection: Detection) {
@@ -254,15 +291,19 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             inferenceMs: detection.inferenceMs,
             hands: detection.hands,
             config: pending.config,
-            deliveryMs: pending.deliveryMs
+            deliveryMs: pending.deliveryMs,
+            face: detection.face,
+            faceMs: detection.faceMs,
+            target: pending.target
         )
         frames.append(frame)
         let result = probe.update(frame)
         if startTime == nil {
-            handSince = result.raw == nil ? nil : handSince ?? frame.t
-            if let handSince, frame.t - handSince >= 1 { startTime = frame.t }
+            let ready = script.usesFace ? frame.face != nil : result.raw != nil
+            readySince = ready ? readySince ?? frame.t : nil
+            if let readySince, frame.t - readySince >= 1 { startTime = frame.t }
         }
-        emit(.frame(snapshot(frame, result: result, remaining: pending.remaining)))
+        emit(.frame(snapshot(frame, result: result, pending: pending)))
     }
 
     private func hand(from observation: VNHumanHandPoseObservation) -> Hand? {
@@ -279,7 +320,22 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         return Hand(chirality: chirality, joints: joints)
     }
 
-    private func snapshot(_ frame: FrameRecord, result: ProbeResult, remaining: Double?) -> SkeletonSnapshot {
+    /// 只取眼睛輪廓與瞳孔，換算成整張影像的正規化座標。
+    private func face(from observation: VNFaceObservation) -> Face? {
+        guard let landmarks = observation.landmarks else { return nil }
+        let box = observation.boundingBox
+        func points(_ region: VNFaceLandmarkRegion2D?) -> [Vec2] {
+            (region?.normalizedPoints ?? []).map { Vec2(x: box.minX + $0.x * box.width, y: box.minY + $0.y * box.height) }
+        }
+        return Face(
+            center: Vec2(x: box.midX, y: box.midY), width: box.width, height: box.height,
+            yaw: observation.yaw?.doubleValue, pitch: observation.pitch?.doubleValue, roll: observation.roll?.doubleValue,
+            leftEye: points(landmarks.leftEye), rightEye: points(landmarks.rightEye),
+            leftPupil: points(landmarks.leftPupil).first, rightPupil: points(landmarks.rightPupil).first
+        )
+    }
+
+    private func snapshot(_ frame: FrameRecord, result: ProbeResult, pending: Pending) -> SkeletonSnapshot {
         recentTimes.append(frame.t)
         recentLatencies.append(frame.latencyMs)
         if recentTimes.count > 30 {
@@ -297,8 +353,10 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             primary: frame.primaryHand.flatMap { frame.hands.firstIndex(of: $0) },
             cursor: result.filtered.map { mapper.mirroredNormalized(fromScreen: $0) },
             pinched: result.isPinched,
-            phase: frame.phase,
-            remaining: remaining,
+            phase: pending.shown,
+            instruction: script.instruction(for: pending.shown),
+            remaining: pending.remaining,
+            startsIn: pending.startsIn,
             fps: span > 0 ? Double(recentTimes.count - 1) / span : 0,
             latencyMs: recentLatencies.reduce(0, +) / Double(recentLatencies.count)
         )

@@ -58,7 +58,7 @@ final class SpikeController: NSObject, NSApplicationDelegate {
             view.snapshot = snapshot
         case .phase(let phase):
             let duration = phase.duration > 0 ? "（\(Int(phase.duration)) 秒）" : ""
-            print("\n▶ \(phase.title)\(duration)：\(phase.instruction)")
+            print("\n▶ \(phase.title)\(duration)：\(script.instruction(for: phase))")
         case .finished:
             writeResults()
             NSApp.terminate(nil)
@@ -74,7 +74,9 @@ final class SpikeController: NSObject, NSApplicationDelegate {
             camera: camera,
             dropped: dropped,
             skipped: skipped,
-            reports: SpikeAnalysis.report(frames: frames, mapper: mapper)
+            reports: SpikeAnalysis.report(frames: frames, mapper: mapper),
+            gaze: script.usesFace ? GazeAnalysis.report(frames: frames) : nil,
+            depth: script.phases.contains(.push) ? DepthAnalysis.report(frames: frames) : nil
         )
         print(summary)
         do {
@@ -86,9 +88,10 @@ final class SpikeController: NSObject, NSApplicationDelegate {
     }
 
     private func showWindow() {
+        // 注視腳本全螢幕：點的位置要對應整個螢幕。
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 960, height: 540),
-            styleMask: [.titled, .closable, .miniaturizable],
+            styleMask: script.usesFace ? [.titled, .closable, .miniaturizable, .resizable] : [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
@@ -98,6 +101,10 @@ final class SpikeController: NSObject, NSApplicationDelegate {
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate()
+        if script.usesFace {
+            window.collectionBehavior.insert(.fullScreenPrimary)
+            window.toggleFullScreen(nil)
+        }
         self.window = window
     }
 

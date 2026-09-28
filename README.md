@@ -65,7 +65,7 @@ swift run -c release mirage-spike
 ```
 
 - 第一次執行時，系統會詢問你用來執行的終端機 App 能否使用相機。
-- 視窗與終端機會依序提示各階段：手入鏡 1 秒後開始計時，之後共約 82 秒，照做即可；關閉視窗會提前結束。
+- 視窗與終端機會依序提示各階段：手入鏡 1 秒後開始，每個階段先顯示說明 5 秒、倒數 3、2、1 才開始記錄，共約 130 秒，照做即可；關閉視窗會提前結束。
 - 視窗只畫手部骨架，不顯示相機畫面。藍框是假設的感應區，白色圓圈是濾波後的游標，捏合時會填滿。
 
 錄其他手勢改用 `gestures` 腳本（扳機、兩指扳機、半彎捲動、反向捲動、握拳、日常）或 `precision` 腳本（懸停、慢速對準、快速移動、按鍵點擊與按住等）；`--format 寬x高` 可指定相機格式，預設同 App：
@@ -73,6 +73,47 @@ swift run -c release mirage-spike
 ```sh
 swift run -c release mirage-spike gestures --format 1552x1552
 ```
+
+`gaze` 腳本評估眼動追蹤是否可行（不整合進 App）：視窗全螢幕，臉入鏡 1 秒後開始，依序看 3×3 的黃點（校準、換順序驗證、轉頭各一輪），最後比較只偵測手、手與臉都偵測時手的延遲。紀錄只存眼睛輪廓、瞳孔、頭部角度與臉框的座標，不存影像。摘要列出用 9 點校準後估計注視位置的誤差：
+
+```sh
+swift run -c release mirage-spike gaze
+```
+
+2026-09-28 的結果：不可行，不整合進 App。
+- 誤差：9 點校準後估計注視位置，p50 330–580 pt、p90 690–890 pt；永遠猜螢幕中央是 768 / 881 pt。
+- 原因：看完整個螢幕寬度，瞳孔在眼角之間只移動約 5 px，Vision 的瞳孔點逐幀就晃 0.7–2 px。
+- 延遲：加上臉部偵測後，手的延遲 p95 多約 60 ms。
+
+`depth` 腳本評估只用 2D 關節推估深度（2.5D）有沒有幫助。它錄按鍵、往前戳（整根食指往螢幕戳），並對照懸停、快速移動、日常：
+
+```sh
+swift run -c release mirage-spike depth
+```
+
+2026-09-28 的結果：沒有幫助，沒有整合。「訊雜比」是上升量除以懸停時的 p99，≥ 3 才分得開。
+- 按鍵：3D 彎曲估計的訊雜比 1.5–8.5×，不比 2D 彎曲（7.0–8.8×）好。
+- 往前戳：3D 彎曲估計 1.3×、指尖前縮 2.0×、整手靠近 1.7×，都分不開。
+- 原因：用長度比推估出平面角會放大關節的晃動；手指接近平貼畫面時，角度最不穩。
+- 現行的 2D 按鍵偵測在同一份錄影中，按鍵 10/10、往前戳 9/10 都算左鍵，其他階段沒有誤觸。手放低時往前戳在畫面上看起來就是彎手指。
+
+`tools/mediapipe-spike/` 用 MediaPipe HandLandmarker（單眼 3D 手部模型）錄同樣的階段，比較同一個模型的 2D 與 3D 特徵。第一次使用前要先建虛擬環境：Mac 版 mediapipe 只在公開 PyPI 上有，而且 Mac 上要用 GPU 模式。
+
+```sh
+cd tools/mediapipe-spike
+/opt/homebrew/bin/python3.12 -m venv .venv
+.venv/bin/pip install --index-url https://pypi.org/simple mediapipe
+curl -sSLO https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
+.venv/bin/python record.py
+```
+
+- 錄完會印出評估結果，紀錄存在 `recordings/mediapipe-depth-<時間>.jsonl`。
+- 之後可以用 `.venv/bin/python analyze.py <紀錄>` 重新分析。
+
+2026-09-28 的結果：不通過，放棄。「訊雜比」同上，是上升量除以懸停時的 p99。
+- 按鍵：3D 特徵的訊雜比最多 2.1×（指尖往鏡頭的深度），不如同一個模型的 2D 彎曲（5.8×）。用 3D 座標算的彎曲角只有 1.1×。
+- 往前戳：指尖往鏡頭 2.5×，和 2D 的 2.4× 差不多。而且快速移動時的深度晃動（p99 26 mm）比往前戳本身（17 mm）還大，會誤觸。
+- 推論很快，p50 / p95 為 8.9 / 12.8 ms。但透過 OpenCV 擷取時，鏡頭在光線不足下自動降到 15 fps；這不影響上面的結論。
 
 結束後終端機會印出結果，並在 `recordings/` 產生兩個檔案：
 

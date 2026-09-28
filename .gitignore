@@ -4,3 +4,7 @@
 recordings/
 .ai/
 build/
+tools/mediapipe-spike/.venv/
+tools/mediapipe-spike/*.task
+tools/mediapipe-spike/__pycache__/
+tools/mediapipe-spike/list-cameras

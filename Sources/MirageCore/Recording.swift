@@ -4,6 +4,8 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
     case trigger, triggerHold, twoFingerTrigger, halfBend, reverseBend, fist
     case hover, precise, sweep, tap, tapHold
     case moveAndTap, moveAndTrigger, threeFingerBend
+    case gazeCalibrate, gazeCheck, gazeHead, faceLatency
+    case push
 
     /// 準備階段不計時：手連續入鏡 1 秒後才開始倒數，避免手還沒就定位就開始量測。
     public var duration: Double {
@@ -13,9 +15,10 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
         case .still: 5
         case .move, .pinch, .wake, .hover, .precise: 10
         case .sweep: 8
-        case .moveAndTap, .moveAndTrigger: 18
+        case .moveAndTap, .moveAndTrigger, .gazeCalibrate, .gazeCheck, .gazeHead: 18
         case .triggerHold, .halfBend, .fist, .tapHold: 12
-        case .daily, .trigger, .twoFingerTrigger, .reverseBend, .tap, .threeFingerBend: 15
+        case .daily, .trigger, .twoFingerTrigger, .reverseBend, .tap, .threeFingerBend, .push: 15
+        case .faceLatency: 20
         }
     }
 
@@ -42,6 +45,11 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
         case .moveAndTap: "移過去點擊"
         case .moveAndTrigger: "移過去右鍵"
         case .threeFingerBend: "三指捲動"
+        case .gazeCalibrate: "注視校準"
+        case .gazeCheck: "注視驗證"
+        case .gazeHead: "轉頭注視"
+        case .faceLatency: "臉部偵測延遲"
+        case .push: "往前戳"
         }
     }
 
@@ -68,6 +76,11 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
         case .moveAndTap: "每到一個十字就按鍵一下！十字每 3 秒換位置：把白圈移過去，彎指尖兩節點一下"
         case .moveAndTrigger: "每到一個十字就扳機一下！十字每 3 秒換位置：把白圈移過去，拇指往下壓一下（右鍵）"
         case .threeFingerBend: "食指、中指、無名指伸直，小指收起，像平常捲動一樣彎一半再伸直，10 下"
+        case .gazeCalibrate: "頭自然放著，眼睛盯著黃點；黃點每 2 秒換位置，共 9 個"
+        case .gazeCheck: "同上，黃點換另一種順序"
+        case .gazeHead: "盯著黃點，同時讓頭跟著轉向黃點，像平常看螢幕角落那樣"
+        case .faceLatency: "臉對著螢幕，右手伸出食指慢慢畫圈"
+        case .push: "食指伸直，整根食指往螢幕方向戳一下再收回（像按電梯按鈕），10 次"
         }
     }
 }
@@ -93,18 +106,39 @@ public struct Script: Sendable {
         name: "controls",
         phases: [.warmup, .move, .moveAndTap, .moveAndTrigger, .twoFingerTrigger, .halfBend, .threeFingerBend, .fist, .daily]
     )
-    public static let all = [m0, gestures, precision, controls]
+    /// 眼動追蹤可行性：用臉部關鍵點估計注視位置的誤差，以及臉部偵測對手部延遲的影響。
+    public static let gaze = Script(name: "gaze", phases: [.warmup, .gazeCalibrate, .gazeCheck, .gazeHead, .faceLatency])
+    /// 深度（2.5D）可行性：按鍵與往前戳，對照懸停、快速移動、日常。
+    public static let depth = Script(name: "depth", phases: [.warmup, .move, .hover, .tap, .push, .sweep, .daily])
+    public static let all = [m0, gestures, precision, controls, gaze, depth]
 
-    public var totalDuration: Double {
-        phases.reduce(0) { $0 + $1.duration }
+    /// 需要偵測臉：準備階段改等臉入鏡。
+    public var usesFace: Bool {
+        phases.contains(.faceLatency)
     }
 
-    /// 依開始後經過的秒數回傳當前階段與剩餘秒數；流程結束回傳 nil。
-    public func at(elapsed: Double) -> (phase: Phase, remaining: Double)? {
+    /// 階段提示；需要偵測臉的腳本，準備階段改成等臉入鏡。
+    public func instruction(for phase: Phase) -> String {
+        phase == .warmup && usesFace ? "臉對著螢幕；偵測到臉 1 秒後開始" : phase.instruction
+    }
+
+    /// 每個階段開始前，先顯示說明 `reading` 秒，再倒數 `countdown` 秒（3、2、1）；這段期間記錄為準備階段。
+    public static let reading = 5.0
+    public static let countdown = 3.0
+
+    public var totalDuration: Double {
+        phases.filter { $0.duration > 0 }.reduce(0) { $0 + Self.reading + Self.countdown + $1.duration }
+    }
+
+    /// 依開始後經過的秒數回傳當前階段與剩餘秒數；階段開始前的說明與倒數期間，`startsIn` 為距離開始的秒數、
+    /// `remaining` 為整個階段的長度。流程結束回傳 nil。
+    public func at(elapsed: Double) -> (phase: Phase, remaining: Double, startsIn: Double?)? {
         var end = 0.0
-        for phase in phases {
-            end += phase.duration
-            if elapsed < end { return (phase, end - elapsed) }
+        for phase in phases where phase.duration > 0 {
+            let start = end + Self.reading + Self.countdown
+            end = start + phase.duration
+            if elapsed < start { return (phase, phase.duration, start - elapsed) }
+            if elapsed < end { return (phase, end - elapsed, nil) }
         }
         return nil
     }
@@ -126,10 +160,16 @@ public struct FrameRecord: Codable, Sendable {
     public var hands: [Hand]
     /// 延遲比較階段的處理方式代號；其他階段為 nil。
     public var config: String?
+    /// 最大的一張臉；沒有偵測臉時為 nil。
+    public var face: Face?
+    /// 臉部偵測耗時（ms）；沒有偵測臉時為 nil。
+    public var faceMs: Double?
+    /// 注視階段要看的點（螢幕 pt，原點左下）；其他階段為 nil。
+    public var target: Vec2?
 
     public init(
         t: Double, phase: Phase, width: Int, height: Int, latencyMs: Double, inferenceMs: Double, hands: [Hand],
-        config: String? = nil, deliveryMs: Double? = nil
+        config: String? = nil, deliveryMs: Double? = nil, face: Face? = nil, faceMs: Double? = nil, target: Vec2? = nil
     ) {
         self.t = t
         self.phase = phase
@@ -140,6 +180,9 @@ public struct FrameRecord: Codable, Sendable {
         self.hands = hands
         self.config = config
         self.deliveryMs = deliveryMs
+        self.face = face
+        self.faceMs = faceMs
+        self.target = target
     }
 
     /// 主要操作手：優先右手，其次平均信心值最高者。

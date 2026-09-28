@@ -9,8 +9,11 @@ struct SkeletonSnapshot: Sendable {
     var cursor: Vec2?
     var pinched: Bool
     var phase: Phase
+    var instruction: String
     /// 階段剩餘秒數；準備階段不計時，為 nil。
     var remaining: Double?
+    /// 階段開始前的說明與倒數期間，距離開始的秒數。
+    var startsIn: Double?
     var fps: Double
     var latencyMs: Double
 }
@@ -55,6 +58,10 @@ final class SkeletonView: NSView {
             cross.move(to: NSPoint(x: p.x, y: p.y - 10))
             cross.line(to: NSPoint(x: p.x, y: p.y + 10))
             cross.stroke()
+            if GazeTargets.target(snapshot.phase, elapsed: 0) != nil {
+                NSColor.systemYellow.setFill()
+                NSBezierPath(ovalIn: circle(p, radius: 6)).fill()
+            }
         }
         for (index, joints) in snapshot.hands.enumerated() {
             let color = index == snapshot.primary ? Self.accent : NSColor.gray
@@ -84,10 +91,22 @@ final class SkeletonView: NSView {
             }
         }
 
-        let countdown = snapshot.remaining.map { "・剩 \(Int($0.rounded(.up))) 秒" } ?? ""
+        var countdown = snapshot.remaining.map { "・剩 \(Int($0.rounded(.up))) 秒" } ?? ""
+        if let startsIn = snapshot.startsIn {
+            let reading = startsIn - Script.countdown
+            countdown = reading > 0 ? "・\(Int(reading.rounded(.up))) 秒後倒數" : "・即將開始"
+            if reading <= 0 {
+                let number = "\(Int(startsIn.rounded(.up)))" as NSString
+                let attributes: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 160, weight: .bold), .foregroundColor: NSColor.white,
+                ]
+                let size = number.size(withAttributes: attributes)
+                number.draw(at: NSPoint(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2), withAttributes: attributes)
+            }
+        }
         let text = """
         \(snapshot.phase.title)\(countdown)
-        \(snapshot.phase.instruction)
+        \(snapshot.instruction)
         \(Int(snapshot.fps.rounded())) fps・延遲 \(Int(snapshot.latencyMs.rounded())) ms
         """
         (text as NSString).draw(
@@ -97,6 +116,7 @@ final class SkeletonView: NSView {
     }
 
     /// 懸停階段每 1/3 換一個十字；慢速對準階段同時顯示兩個；移過去點擊、右鍵時每 3 秒換一個。座標在感應區內。
+    /// 注視階段的點以整個畫面為準：視窗全螢幕，與記錄的螢幕座標一致。
     private func targets(_ snapshot: SkeletonSnapshot) -> [Vec2] {
         let spots = [Vec2(x: 0.42, y: 0.5), Vec2(x: 0.58, y: 0.55), Vec2(x: 0.5, y: 0.42)]
         switch snapshot.phase {
@@ -105,6 +125,9 @@ final class SkeletonView: NSView {
             return [spots[min(2, Int(elapsed / (snapshot.phase.duration / 3)))]]
         case .precise:
             return [Vec2(x: 0.46, y: 0.5), Vec2(x: 0.54, y: 0.5)]
+        case .gazeCalibrate, .gazeCheck, .gazeHead:
+            let elapsed = snapshot.phase.duration - (snapshot.remaining ?? snapshot.phase.duration)
+            return GazeTargets.target(snapshot.phase, elapsed: elapsed).map { [$0] } ?? []
         case .moveAndTap, .moveAndTrigger:
             let jumps = [Vec2(x: 0.38, y: 0.6), Vec2(x: 0.62, y: 0.42), Vec2(x: 0.45, y: 0.4), Vec2(x: 0.6, y: 0.62)]
             let elapsed = snapshot.phase.duration - (snapshot.remaining ?? snapshot.phase.duration)

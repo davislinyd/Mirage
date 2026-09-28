@@ -2,7 +2,10 @@ import Foundation
 import MirageCore
 
 enum Summary {
-    static func text(script: Script, camera: String, dropped: Int, skipped: Int, reports: [PhaseReport]) -> String {
+    static func text(
+        script: Script, camera: String, dropped: Int, skipped: Int, reports: [PhaseReport], gaze: GazeReport?,
+        depth: [DepthAnalysis.FeatureReport]?
+    ) -> String {
         let pinch = PinchDetector()
         var lines = [
             "", "===== Mirage \(script.name) 結果 =====", camera,
@@ -26,6 +29,27 @@ enum Summary {
                 lines.append("  誤觸：點擊 \(report.clickCount) 次、喚醒 \(report.wakeCount) 次")
             default:
                 break
+            }
+        }
+        if let gaze {
+            lines.append("")
+            lines.append("[注視估計] 量得到兩眼與瞳孔 \(percent(gaze.usableRate))・臉部偵測 p50/p95：\(number(gaze.faceMsP50)) / \(number(gaze.faceMsP95)) ms")
+            lines.append("  誤差 p50/p90（pt）；「平滑」為最近 0.3 秒的中位數。通過標準：p50 ≤ 100、p90 ≤ 200")
+            func error(_ e: GazeError?) -> String { e.map { "\(number($0.p50, digits: 0)) / \(number($0.p90, digits: 0))" } ?? "—" }
+            for model in gaze.models {
+                lines.append("  \(model.name)：驗證 \(error(model.check))（平滑 \(error(model.checkSmoothed))、10 Hz \(error(model.check10Hz)))・轉頭 \(error(model.head))（平滑 \(error(model.headSmoothed)))・留一 \(error(model.leaveOneOut))")
+            }
+        }
+        if let depth {
+            lines.append("")
+            lines.append("[深度估計] 0.3 秒內的上升量：懸停 p99｜按鍵、往前戳取上升最多的 10 下中位數（括號為 ÷ 懸停 p99，≥ 3 算分得開）｜快速移動、日常 p99")
+            for row in depth {
+                let digits = [.flex2D, .bend3D].contains(row.feature) ? 1 : 3
+                func ratio(_ value: Double?) -> String {
+                    guard let value, let hover = row.hover, hover > 0 else { return "" }
+                    return "（\(number(value / hover))×）"
+                }
+                lines.append("  \(row.feature.title)：\(number(row.hover, digits: digits))｜\(number(row.tap, digits: digits))\(ratio(row.tap))、\(number(row.push, digits: digits))\(ratio(row.push))｜\(number(row.sweep, digits: digits))、\(number(row.daily, digits: digits))")
             }
         }
         return lines.joined(separator: "\n")

@@ -8,7 +8,7 @@ public enum Joint: Int, CaseIterable, Sendable {
     case littleMCP, littlePIP, littleDIP, littleTip
 }
 
-public struct Vec2: Sendable, Equatable {
+public struct Vec2: Codable, Sendable, Equatable {
     public var x: Double
     public var y: Double
 

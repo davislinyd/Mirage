@@ -65,9 +65,10 @@ private func makeHand(
 
 @Suite struct PhaseTests {
     @Test func scheduleStartsAfterWarmup() {
+        let lead = Script.reading + Script.countdown
         #expect(Script.m0.at(elapsed: 0)?.phase == .latency)
-        #expect(Script.m0.at(elapsed: 32)?.phase == .still)
-        #expect(Script.m0.at(elapsed: 32.5)?.remaining == 4.5)
+        #expect(Script.m0.at(elapsed: lead + 32)?.phase == .still)
+        #expect(Script.m0.at(elapsed: 2 * lead + 32.5)?.remaining == 4.5)
         #expect(Script.m0.at(elapsed: Script.m0.totalDuration)?.phase == nil)
         #expect(Script.gestures.at(elapsed: 0)?.phase == .move)
     }
@@ -789,5 +790,99 @@ private func makeHand(
         #expect(reports.map(\.frames) == [60, 60])
         #expect(reports.map(\.latencyP50) == [100, 60])
         #expect(reports.map(\.deliveryP50) == [80, 40])
+    }
+}
+
+@Suite struct GazeTests {
+    @Test func eachGazePhaseVisitsNineTargets() {
+        for phase in [Phase.gazeCalibrate, .gazeCheck, .gazeHead] {
+            let targets = (0..<9).compactMap { GazeTargets.target(phase, elapsed: Double($0) * GazeTargets.interval + 1) }
+            #expect(Set(targets.map { "\($0.x),\($0.y)" }).count == 9)
+            #expect(GazeTargets.target(phase, elapsed: 1.9) == GazeTargets.target(phase, elapsed: 0))
+        }
+        #expect(GazeTargets.target(.move, elapsed: 1) == nil)
+    }
+
+    @Test func oldRecordingsStillDecode() throws {
+        let line = #"{"t":1,"phase":"move","width":10,"height":10,"latencyMs":1,"inferenceMs":1,"hands":[]}"#
+        let frame = try JSONDecoder().decode(FrameRecord.self, from: Data(line.utf8))
+        #expect(frame.face == nil && frame.target == nil && frame.faceMs == nil)
+    }
+
+    /// 瞳孔在眼角之間的位置與目標成正比，頭不動：看眼睛的模型應該幾乎沒有誤差，只看頭的模型估不出來。
+    @Test func eyeModelRecoversSyntheticGaze() throws {
+        func eye(_ x: Double, _ fx: Double, _ fy: Double) -> (contour: [Vec2], pupil: Vec2) {
+            let contour = [Vec2(x: x, y: 0.6), Vec2(x: x + 0.03, y: 0.61), Vec2(x: x + 0.06, y: 0.6), Vec2(x: x + 0.03, y: 0.59)]
+            return (contour, Vec2(x: x + 0.03 + 0.012 * (fx - 0.5), y: 0.6 + 0.006 * (fy - 0.5)))
+        }
+        var frames: [FrameRecord] = []
+        for (p, phase) in [Phase.gazeCalibrate, .gazeCheck, .gazeHead].enumerated() {
+            for i in 0..<540 {
+                let elapsed = Double(i) / 30
+                let spot = try #require(GazeTargets.target(phase, elapsed: elapsed))
+                let left = eye(0.4, spot.x, spot.y), right = eye(0.54, spot.x, spot.y)
+                let face = Face(
+                    center: Vec2(x: 0.5, y: 0.55), width: 0.3, height: 0.4, yaw: 0, pitch: 0, roll: 0,
+                    leftEye: left.contour, rightEye: right.contour, leftPupil: left.pupil, rightPupil: right.pupil
+                )
+                frames.append(FrameRecord(
+                    t: Double(p) * 18 + elapsed, phase: phase, width: 1000, height: 1000, latencyMs: 0, inferenceMs: 0,
+                    hands: [], face: face, faceMs: 10, target: Vec2(x: spot.x * 1440, y: spot.y * 900)
+                ))
+            }
+        }
+        let report = GazeAnalysis.report(frames: frames)
+        #expect(report.usableRate == 1)
+        let eyes = try #require(report.models.first { $0.name.hasPrefix("眼睛（") })
+        for error in [eyes.check, eyes.checkSmoothed, eyes.head, eyes.check10Hz] {
+            #expect(try #require(error).p90 < 5)
+        }
+        // 留一時角落的點要外插，嶺迴歸的收縮多出幾 pt。
+        #expect(try #require(eyes.leaveOneOut).p90 < 15)
+        let headOnly = try #require(report.models.first { $0.name.hasPrefix("只看頭") })
+        #expect(try #require(headOnly.check).p50 > 200)
+    }
+}
+
+@Suite struct ScriptTests {
+    @Test func eachPhaseStartsAfterReadingAndCountdown() {
+        let script = Script(name: "test", phases: [.warmup, .still, .move])
+        let lead = Script.reading + Script.countdown
+        // 說明與倒數期間：顯示下一個階段，還沒開始。
+        #expect(script.at(elapsed: 1)?.phase == .still)
+        #expect(script.at(elapsed: 1)?.startsIn == lead - 1)
+        #expect(script.at(elapsed: lead + 1)?.startsIn == nil)
+        #expect(script.at(elapsed: lead + 1)?.remaining == Phase.still.duration - 1)
+        let next = lead + Phase.still.duration + 1
+        #expect(script.at(elapsed: next)?.phase == .move)
+        #expect(script.at(elapsed: next)?.startsIn == lead - 1)
+        #expect(script.totalDuration == 2 * lead + Phase.still.duration + Phase.move.duration)
+        #expect(script.at(elapsed: script.totalDuration) == nil)
+    }
+}
+
+@Suite struct DepthAnalysisTests {
+    /// 指根在 (0.5, 0.4)、掌寬 0.2；近端一節往上 0.1 平貼畫面，PIP 之後兩節（共 0.1）往鏡頭方向彎 `bend` 度。
+    private func hand(bend: Double) -> Hand {
+        var hand = makeHand(pointing: true)
+        let shown = cos(bend * .pi / 180)
+        func set(_ joint: Joint, _ x: Double, _ y: Double) { hand.joints[joint.rawValue] = JointSample(x: x, y: y, c: 0.9) }
+        set(.indexMCP, 0.5, 0.4)
+        set(.littleMCP, 0.3, 0.4)
+        set(.indexPIP, 0.5, 0.5)
+        set(.indexDIP, 0.5, 0.5 + 0.05 * shown)
+        set(.indexTip, 0.5, 0.5 + 0.1 * shown)
+        return hand
+    }
+
+    @Test func bendTowardCameraIsRecovered() throws {
+        let lengths = DepthAnalysis.Lengths(proximal: 0.5, distal: 0.5)
+        for bend in [20.0, 40.0, 60.0] {
+            let features = try #require(DepthAnalysis.features(hand(bend: bend), width: 1000, height: 1000, lengths: lengths, palm: 200))
+            // 畫面上手指仍是直線：2D 彎曲量看不出來。
+            #expect(try #require(features[.flex2D]) < 1)
+            #expect(abs(try #require(features[.bend3D]) - bend) < 5)
+            #expect(abs(try #require(features[.approach])) < 0.01)
+        }
     }
 }

@@ -60,7 +60,7 @@ public enum SpikeAnalysis {
     static func summarize(_ group: [Sample]) -> PhaseReport {
         let phase = group[0].frame.phase
         var report = PhaseReport(phase: phase, config: group[0].frame.config)
-        let samples = phase == .latency ? group.filter { $0.frame.t >= group[0].frame.t + settle } : group
+        let samples = [.latency, .faceLatency].contains(phase) ? group.filter { $0.frame.t >= group[0].frame.t + settle } : group
         report.frames = samples.count
         guard let first = samples.first, let last = samples.last else { return report }
         let span = last.frame.t - first.frame.t
