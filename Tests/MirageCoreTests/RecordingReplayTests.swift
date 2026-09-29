@@ -27,6 +27,10 @@ private enum Replay {
     /// 扳機開頭的誤觸，扳機的拇指門檻與移動時的扳機不留在按下狀態，來自第二份漏掉的右鍵。
     static let controlsWithTriggers = ["controls-2026-09-28T14-10-14Z", "controls-2026-09-28T14-37-53Z"]
     static let controlsAvailable = (controls + controlsWithoutTaps + controlsWithTriggers).allSatisfy(exists)
+    /// `mirage-spike swipe`：兩指往上甩（抬手）、往下甩（彎手指），各 10 下；慢慢移開後停住；兩指扳機；日常。前兩份
+    /// 參與了調整：第一份定甩動的門檻，第二份找出往上甩之前的預備動作，把反方向的冷卻延長到 1.5 秒。第三份只用來驗證。
+    static let swipe = ["swipe-2026-09-29T12-21-05Z", "swipe-2026-09-29T12-52-10Z", "swipe-2026-09-29T13-01-29Z"]
+    static let swipeAvailable = swipe.allSatisfy(exists)
 
     static func exists(_ name: String) -> Bool {
         FileManager.default.fileExists(atPath: directory.appendingPathComponent("\(name).jsonl").path)
@@ -111,18 +115,19 @@ private enum Replay {
         }
     }
 
-    @Test func everyBendScrollsTheSameWay() throws {
+    @Test func quickBendsScrollDown() throws {
         let outputs = try Replay.active(try Replay.load(Replay.scrolling), phase: .daily)
         // 伸直兩指後一直在捲動中，直到結束：彎手指時指尖低於操作範圍，但手沒有離開。
         let start = try #require(outputs.firstIndex { $0.scrolling != nil })
         let scrolling = outputs[start...]
         #expect(scrolling.allSatisfy { $0.state == .active && $0.scrolling != nil })
         #expect(scrolling.allSatisfy { $0.cursor == scrolling.first?.cursor && $0.button == nil })
-        // 每彎一下，內容往下；伸直回來不捲。
-        #expect(scrolling.compactMap(\.scroll).allSatisfy { $0 < 0 })
+        // 彎得快就是往下甩，內容往下；伸直回來幾乎不往上捲（不超過 5%）。
+        let scrolls = scrolling.compactMap(\.scroll)
+        let down = -scrolls.filter { $0 < 0 }.reduce(0, +), up = scrolls.filter { $0 > 0 }.reduce(0, +)
+        #expect(down > 0 && up <= down * 0.05, "up \(up) down \(down)")
         // 握拳時拇指貼著食指，不是扳機。
         #expect(scrolling.allSatisfy { !$0.rightClick && !$0.escape })
-        #expect(outputs.last?.scrolling == .down)
     }
 }
 
@@ -148,9 +153,7 @@ private enum Replay {
             let other = count(try Replay.active(frames, phase: phase))
             #expect(other == (0, 0, 0), "\(phase) \(other)")
         }
-        // 兩指半彎捲動：每一下都讓內容往下。
-        let bends = try Replay.active(frames, phase: .halfBend).compactMap(\.scroll)
-        #expect(!bends.isEmpty && bends.allSatisfy { $0 < 0 })
+        // 半彎捲動是舊的手勢：彎、伸一樣快，伸直常被當成往上甩，不驗捲動方向；新手勢由 `SwipeReplayTests` 驗。
     }
 }
 
@@ -245,5 +248,29 @@ private enum Replay {
 
     @Test(arguments: Replay.controlsWithoutTaps) func movingBetweenTargetsDoesNotClick(name: String) throws {
         #expect(try leftClicks(name, [.move, .moveAndTap, .moveAndTrigger, .twoFingerTrigger, .halfBend, .threeFingerBend, .fist, .daily]) == 0)
+    }
+}
+
+@Suite(.enabled(if: Replay.swipeAvailable)) struct SwipeReplayTests {
+    /// 往上（內容往上）與往下捲動的總量（pt）。
+    private func total(_ outputs: [CursorController.Output]) -> (up: Double, down: Double) {
+        let scrolls = outputs.compactMap(\.scroll)
+        return (scrolls.filter { $0 > 0 }.reduce(0, +), -scrolls.filter { $0 < 0 }.reduce(0, +))
+    }
+
+    @Test(arguments: Replay.swipe) func flicksScrollAndReturnsDoNot(name: String) throws {
+        let frames = try Replay.load(name)
+        // 各甩 10 下；回程造成的反向捲動不超過 5%。
+        let up = total(try Replay.active(frames, phase: .swipeUp))
+        #expect(up.up >= 3000 && up.down <= up.up * 0.05, "\(up)")
+        let down = total(try Replay.active(frames, phase: .swipeDown))
+        #expect(down.down >= 3000 && down.up <= down.down * 0.05, "\(down)")
+        // 慢慢移開、停住再移回來不捲；兩指扳機是 ESC，也不捲。甩動與慢慢移動時抬手，拇指跟著晃，不是 ESC。
+        #expect(try Replay.active(frames, phase: .swipeHold).allSatisfy { $0.scroll == nil })
+        for phase in [Phase.swipeUp, .swipeDown, .swipeHold] {
+            #expect(try Replay.active(frames, phase: phase).allSatisfy { !$0.escape }, "\(phase)")
+        }
+        let trigger = try Replay.active(frames, phase: .twoFingerTrigger)
+        #expect(trigger.filter(\.escape).count >= 8 && trigger.allSatisfy { $0.scroll == nil })
     }
 }

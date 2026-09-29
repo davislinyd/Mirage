@@ -11,7 +11,7 @@
   - 拖曳：按住約 0.5 秒後移動手。
   - 右鍵（單指扳機）：拇指壓到食指側面，抬起時送出。
   - 縮放：扳機按住 0.5 秒後，手往上放大、往下縮小，送 ⌘= / ⌘−。
-  - 捲動：兩指彎曲時內容往下，三指彎曲時內容往上；收回中指就結束。
+  - 捲動（甩動）：兩指伸直後，指尖往上或往下快速一甩就往那個方向捲並慣性滑行，慢慢收回不捲；收回中指就結束。
   - ESC：捲動中做一次扳機。
 - 其他功能：
   - 操作者鎖定：只跟著喚醒的那隻手。
@@ -38,7 +38,7 @@
 - `swift build`、`swift test`
 - `scripts/build-app.sh`：產生 `build/Mirage.app`。
 - `open build/Mirage.app`：舊版在執行時，要先從選單列結束 Mirage。
-- 錄影：`swift run -c release mirage-spike <m0|gestures|precision|controls|gaze|depth>`，存到 `recordings/`。
+- 錄影：`swift run -c release mirage-spike <m0|gestures|precision|controls|gaze|depth|swipe>`，存到 `recordings/`。
   - 錄影前先結束 Mirage，否則相機被占用。
   - 錄影時不要同時編譯，否則會掉幀。
 - 動作紀錄：`/usr/bin/log stream --predicate 'subsystem == "io.github.davislinyd.Mirage"' --level info --style compact`
@@ -53,6 +53,7 @@
   4. 用沒參與調整的新錄影驗證。
 - 錄影只在本機，CI 上沒有錄影，重播測試會自動略過。
 - 不要 commit `recordings/`、`.ai/`、`build/`。
+- repo 是公開的：commit 與文件不放內部資訊（公司網址、email 等）。
 - 回覆用繁體中文，簡潔。commit、push、開 PR、刪除分支前都先問 Davis。
 
 ## 已知問題與待辦
@@ -60,6 +61,10 @@
 1. 實機試用 M3：Safari 縮放、右鍵在拇指抬起時出現、HUD 切換、另一隻手出現在畫面時。
 2. 日常使用 1 小時，用動作紀錄確認 0 誤觸。
 3. 按得很輕（13–17°）的按鍵會漏，常出現在右上角的目標；門檻 20° 先不動。
-4. 重播時，部分錄影的「日常」階段會捲動幾百 pt。這是改動前就有的，還沒處理。
+4. 甩動捲動已用第三份 `swipe` 驗證（反向捲動 0），還沒實機試用。重播時，部分錄影的「日常」階段意外進入捲動後會誤捲幾百 pt，改動前就有，還沒處理。
 5. 堆疊的 PR #1–#5 已合併或關閉，舊分支已刪除，只剩 `main`。
 6. M4 延後：Developer ID、公證、dmg、Sparkle。
+7. 甩動的已知限制：
+   - 換方向要等上一次甩動開始後 1.5 秒。
+   - 往上滑得太慢、沒算成一甩時，它的回程若快（約 6 掌寬/秒），仍可能被當成往下甩。
+   - 捲動中握拳再伸直：握拳就是往下甩，伸直得快也會往上捲。

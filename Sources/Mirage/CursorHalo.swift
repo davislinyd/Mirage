@@ -3,7 +3,7 @@ import MirageCore
 import QuartzCore
 
 /// 游標周圍的光圈，讓使用者知道手勢狀態：喚醒後閃爍（手勢已辨識，伸出食指開始），控制中持續發光，捲動時光圈裡
-/// 有兩根（兩指，內容往下）或三根（三指，內容往上）手指，往內容移動的方向滑動。
+/// 有兩根手指，捲動時往內容移動的方向滑動，沒在捲時靜止。
 /// 是滑鼠事件穿透的透明小視窗，顯示期間每次螢幕更新都移到游標位置，所以跟著游標，不論游標是誰移動的。
 @MainActor
 final class CursorHalo: NSObject {
@@ -35,8 +35,9 @@ final class CursorHalo: NSObject {
         ring.shadowOffset = .zero
         view.layer?.addSublayer(ring)
         fingers.frame = CGRect(x: 20, y: 33, width: 24, height: 12)
-        for _ in 0..<3 {
+        for x in [3.0, 14.0] {
             let finger = CALayer()
+            finger.frame = CGRect(x: x, y: 0, width: 7, height: 12)
             finger.cornerRadius = 3.5
             finger.backgroundColor = NSColor.systemCyan.cgColor
             fingers.addSublayer(finger)
@@ -82,15 +83,7 @@ final class CursorHalo: NSObject {
         self.direction = direction
         fingers.removeAllAnimations()
         fingers.isHidden = direction == nil
-        guard let direction else { return }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        let xs: [Double?] = direction == .down ? [3, nil, 14] : [0, 8.5, 17]
-        for (finger, x) in zip(fingers.sublayers ?? [], xs) {
-            finger.isHidden = x == nil
-            finger.frame = CGRect(x: x ?? 0, y: 0, width: 7, height: 12)
-        }
-        CATransaction.commit()
+        guard let direction, direction != .still else { return }
         // 只往一個方向滑並淡出，再從頭開始，才看得出方向。
         let slide = CABasicAnimation(keyPath: "position.y")
         slide.byValue = direction == .down ? -4.0 : 4.0

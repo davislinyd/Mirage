@@ -6,6 +6,7 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
     case moveAndTap, moveAndTrigger, threeFingerBend
     case gazeCalibrate, gazeCheck, gazeHead, faceLatency
     case push
+    case swipeUp, swipeDown, swipeHold
 
     /// 準備階段不計時：手連續入鏡 1 秒後才開始倒數，避免手還沒就定位就開始量測。
     public var duration: Double {
@@ -15,9 +16,9 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
         case .still: 5
         case .move, .pinch, .wake, .hover, .precise: 10
         case .sweep: 8
-        case .moveAndTap, .moveAndTrigger, .gazeCalibrate, .gazeCheck, .gazeHead: 18
+        case .moveAndTap, .moveAndTrigger, .gazeCalibrate, .gazeCheck, .gazeHead, .swipeHold: 18
         case .triggerHold, .halfBend, .fist, .tapHold: 12
-        case .daily, .trigger, .twoFingerTrigger, .reverseBend, .tap, .threeFingerBend, .push: 15
+        case .daily, .trigger, .twoFingerTrigger, .reverseBend, .tap, .threeFingerBend, .push, .swipeUp, .swipeDown: 15
         case .faceLatency: 20
         }
     }
@@ -50,6 +51,9 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
         case .gazeHead: "轉頭注視"
         case .faceLatency: "臉部偵測延遲"
         case .push: "往前戳"
+        case .swipeUp: "兩指往上滑"
+        case .swipeDown: "兩指往下滑"
+        case .swipeHold: "兩指慢慢移動"
         }
     }
 
@@ -81,6 +85,9 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
         case .gazeHead: "盯著黃點，同時讓頭跟著轉向黃點，像平常看螢幕角落那樣"
         case .faceLatency: "臉對著螢幕，右手伸出食指慢慢畫圈"
         case .push: "食指伸直，整根食指往螢幕方向戳一下再收回（像按電梯按鈕），10 次"
+        case .swipeUp: "食指與中指伸直，指尖往上快速甩一下，再慢慢收回原處，10 下"
+        case .swipeDown: "食指與中指伸直，指尖往下快速甩一下，再慢慢收回原處，10 下"
+        case .swipeHold: "兩指伸直，手慢慢往上移約一個掌寬、停約 1 秒再慢慢回來；再往下同樣做。上下各 3 次（不會捲動）"
         }
     }
 }
@@ -110,7 +117,11 @@ public struct Script: Sendable {
     public static let gaze = Script(name: "gaze", phases: [.warmup, .gazeCalibrate, .gazeCheck, .gazeHead, .faceLatency])
     /// 深度（2.5D）可行性：按鍵與往前戳，對照懸停、快速移動、日常。
     public static let depth = Script(name: "depth", phases: [.warmup, .move, .hover, .tap, .push, .sweep, .daily])
-    public static let all = [m0, gestures, precision, controls, gaze, depth]
+    /// 兩指甩動捲動：往上甩、往下甩再慢慢收回；對照慢慢移動、兩指扳機與日常。
+    public static let swipe = Script(
+        name: "swipe", phases: [.warmup, .move, .swipeUp, .swipeDown, .swipeHold, .twoFingerTrigger, .daily]
+    )
+    public static let all = [m0, gestures, precision, controls, gaze, depth, swipe]
 
     /// 需要偵測臉：準備階段改等臉入鏡。
     public var usesFace: Bool {

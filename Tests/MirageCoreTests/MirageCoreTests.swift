@@ -327,9 +327,7 @@ private func makeHand(
     /// 食指指向、食指尖在 (`x`, `y`) 的手，游標跟著的 PIP 在指尖下方 0.1；`pressed` 為 true 時拇指壓在食指第二關節旁
     /// （扳機，距離約 0.21 掌寬，平常約 0.68），`tapped` 為 true 時指尖兩節往下彎約 35°（按鍵），`twoFingers` 為
     /// true 時中指也伸直。
-    private func pointing(
-        _ x: Double, _ y: Double, pressed: Bool = false, tapped: Bool = false, twoFingers: Bool = false, threeFingers: Bool = false
-    ) -> Hand {
+    private func pointing(_ x: Double, _ y: Double, pressed: Bool = false, tapped: Bool = false, twoFingers: Bool = false) -> Hand {
         var hand = makeHand(
             pointing: true, thumbTip: pressed ? Vec2(x: 0.565, y: 0.42) : Vec2(x: 0.62, y: 0.45), offset: Vec2(x: x - 0.54, y: y - 0.52)
         )
@@ -339,13 +337,9 @@ private func makeHand(
             hand.joints[Joint.indexTip.rawValue].x += 0.02
             hand.joints[Joint.indexTip.rawValue].y -= 0.03
         }
-        if twoFingers || threeFingers {
+        if twoFingers {
             hand.joints[Joint.middleDIP.rawValue].y += 0.09
             hand.joints[Joint.middleTip.rawValue].y += 0.19
-        }
-        if threeFingers {
-            hand.joints[Joint.ringDIP.rawValue].y += 0.09
-            hand.joints[Joint.ringTip.rawValue].y += 0.19
         }
         return hand
     }
@@ -389,7 +383,7 @@ private func makeHand(
         )).filter { $0.scroll != nil }
         let first = try #require(scrolling.first)
         let cursor = try #require(first.cursor)
-        // 彎下時捲動 0.89 × 200 pt，內容往下；之後是慣性，伸直回來不往回捲。
+        // 彎下是往下甩：捲動 0.89 × 200 pt，內容往下；之後是慣性，伸直回來不往回捲。
         #expect(abs((first.scroll ?? 0) + 178) < 1.5)
         #expect(scrolling.allSatisfy { ($0.scroll ?? 0) < 0 && $0.scrolling == .down })
         // 防抖在中速移動後可能留下幾 pt 的偏差，下次快速移動才收回。
@@ -397,10 +391,10 @@ private func makeHand(
         #expect(scrolling.allSatisfy { $0.cursor == cursor && $0.button == nil })
     }
 
-    @Test func threeFingersScrollTheOtherWay() {
+    @Test func raisingHandQuicklyScrollsContentUp() {
+        // 兩指伸直後，手很快往上抬 0.1（指尖一幀內高 0.47 掌寬）：往上甩，內容往上。
         let scrolling = outputs(woken(
-            (pointing(0.5, 0.6), 1), (pointing(0.5, 0.6, threeFingers: true), 0.3), (bent(0.5, 0.6), 0.3),
-            (pointing(0.5, 0.6, threeFingers: true), 0.3)
+            (pointing(0.5, 0.6), 1), (pointing(0.5, 0.6, twoFingers: true), 0.3), (pointing(0.5, 0.7, twoFingers: true), 0.3)
         )).filter { $0.scroll != nil }
         #expect(!scrolling.isEmpty && scrolling.allSatisfy { ($0.scroll ?? 0) > 0 && $0.scrolling == .up })
     }
@@ -412,6 +406,17 @@ private func makeHand(
         ))
         #expect(frames.filter(\.escape).count == 1)
         #expect(frames.allSatisfy { !$0.rightClick && $0.button == nil })
+    }
+
+    @Test func triggerWhileRaisingHandDoesNotPressEscape() {
+        // 兩指時手往上抬（手掌每秒約 1.4 掌寬），拇指跟著晃到食指旁：同右鍵，手在動時不算。
+        let rising: [Segment] = (0..<8).map { i in (pointing(0.5, 0.5 + 0.01 * Double(i), pressed: i >= 3, twoFingers: true), 1.0 / 30) }
+        let frames = outputs(
+            woken((pointing(0.5, 0.5), 1), (pointing(0.5, 0.5, twoFingers: true), 0.3)) + rising
+                + [(pointing(0.5, 0.57, twoFingers: true), 0.3)]
+        )
+        #expect(frames.contains { $0.scrolling != nil })
+        #expect(frames.allSatisfy { !$0.escape && !$0.rightClick })
     }
 
     @Test func fistWhileScrollingDoesNotRightClick() {
@@ -525,7 +530,7 @@ private func makeHand(
         let tap = outputs(woken((pointing(0.5, 0.5), 1), (pointing(0.5, 0.5, tapped: true), 0.8)))
         #expect(tap.contains { $0.mode == .pressing })
         let scroll = outputs(woken((pointing(0.5, 0.5), 1), (pointing(0.5, 0.5, twoFingers: true), 0.5)))
-        #expect(scroll.last?.mode == .scrolling(.down))
+        #expect(scroll.last?.mode == .scrolling(.still))
     }
 
     @Test func losingHandDeactivates() throws {
@@ -732,18 +737,17 @@ private func makeHand(
 @Suite struct ScrollerTests {
     private typealias Frame = (scroll: Double, scrolling: Bool, direction: Scroller.Direction)
 
-    /// 以 30 fps 依序送入各段：伸直幾指（3 = 食指、中指、無名指，2 = 食指與中指，1 = 只有食指，0 = 彎著）、秒數、
-    /// 食指尖高度每秒的變化（掌寬）。高度從伸直的 0.9 開始。回傳每一幀的捲動距離，與送入後的捲動狀態。
+    /// 以 30 fps 依序送入各段：伸直幾指（2 = 食指與中指，1 = 只有食指，0 = 其他姿勢，例如甩下去時手指彎著）、秒數、
+    /// 食指尖高度每秒的變化（掌寬）。高度從 0 開始。回傳每一幀的捲動距離，與送入後的捲動狀態。
     private func run(_ segments: [(fingers: Int, seconds: Double, speed: Double)]) -> [Frame] {
         var scroller = Scroller()
         var frames: [Frame] = []
-        var height = 0.9
+        var level = 0.0
         for segment in segments {
             for _ in 0..<Int((segment.seconds * 30).rounded()) {
-                height += segment.speed / 30
+                level += segment.speed / 30
                 let scroll = scroller.update(
-                    twoFingers: segment.fingers == 2, threeFingers: segment.fingers == 3, pointing: segment.fingers == 1,
-                    height: height, at: Double(frames.count) / 30
+                    twoFingers: segment.fingers == 2, pointing: segment.fingers == 1, level: level, at: Double(frames.count) / 30
                 )
                 frames.append((scroll ?? 0, scroller.isScrolling, scroller.direction))
             }
@@ -755,52 +759,64 @@ private func makeHand(
         frames.reduce(0) { $0 + $1.scroll }
     }
 
-    @Test func bendScrollsAndStraighteningDoesNot() {
-        // 兩指慢慢彎到 0.06 再伸直，沒有慣性；最後收回中指。內容往下。
-        let frames = run([(2, 0.2, 0), (0, 0.7, -1.2), (0, 0.1, 0), (0, 0.7, 1.2), (2, 0.3, 0), (1, 0.3, 0)])
-        #expect(abs(total(frames) + 168) < 2)
-        #expect(frames.dropFirst(27).allSatisfy { $0.scroll == 0 })
-        #expect(frames.allSatisfy { $0.direction == .down })
-        #expect(frames.suffix(3).allSatisfy { !$0.scrolling })
+    @Test func flickDownScrollsAndSlowReturnDoesNot() {
+        // 0.13 秒往下甩 2 掌寬（彎手指），停一下，再花 1 秒收回來。
+        let frames = run([(2, 0.2, 0), (0, 4.0 / 30, -15), (0, 0.2, 0), (2, 1, 2), (2, 2, 0)])
+        // 甩的那幾幀：捲動距離 = 指尖移動 × `scale`，內容跟著指尖往下。
+        #expect(abs(total(frames.dropFirst(6).prefix(4)) + 400) < 2)
+        // 之後慣性繼續往下捲、逐漸停下；收回來不往上捲。
+        #expect(total(frames) < -600)
+        #expect(frames.allSatisfy { $0.scroll <= 0 })
+        #expect(frames.suffix(5).allSatisfy { $0.scroll == 0 && $0.direction == .still && $0.scrolling })
     }
 
-    @Test func halfBendScrolls() {
-        // 只彎 0.5 掌寬：手放低時畫面上的彎一半。
-        let frames = run([(2, 0.2, 0), (0, 0.5, -1), (0, 0.2, 0), (0, 0.5, 1), (2, 0.2, 0)])
-        #expect(abs(total(frames) + 100) < 2)
+    @Test func flickUpScrollsContentUp() {
+        let frames = run([(2, 0.2, 0), (2, 4.0 / 30, 15), (2, 0.2, 0), (0, 1, -2), (2, 1, 0)])
+        #expect(abs(total(frames.dropFirst(6).prefix(4)) - 400) < 2)
+        #expect(frames.allSatisfy { $0.scroll >= 0 })
+        #expect(frames.dropFirst(6).prefix(10).allSatisfy { $0.direction == .up })
     }
 
-    @Test func threeFingersScrollTheOtherWay() {
-        let frames = run([(3, 0.2, 0), (0, 0.7, -1.2), (0, 0.1, 0), (0, 0.7, 1.2), (3, 0.2, 0)])
-        #expect(abs(total(frames) - 168) < 2)
-        #expect(frames.last?.direction == .up)
-    }
-
-    @Test func changingFingerCountChangesDirection() {
-        // 兩指彎一下，伸直後換成三指再彎一下：先往下、再往上。
-        let frames = run([(2, 0.2, 0), (0, 0.7, -1.2), (0, 0.7, 1.2), (3, 0.2, 0), (0, 0.7, -1.2), (0, 0.7, 1.2)])
-        #expect(abs(total(frames.prefix(48)) + 168) < 2)
-        #expect(abs(total(frames.dropFirst(48)) - 168) < 2)
-    }
-
-    @Test func flickKeepsScrolling() {
-        // 0.1 秒彎下 1.2 掌寬：停住後繼續捲動並減速，伸直回來時也不中斷，最後停止。
-        let frames = run([(2, 0.2, 0), (0, 0.1, -12), (0, 0.3, 0), (0, 0.1, 12), (2, 2.5, 0)])
-        #expect(abs(total(frames.prefix(9)) + 240) < 2)
-        #expect(total(frames.dropFirst(9)) < -400)
-        #expect(frames.dropFirst(9).prefix(15).allSatisfy { $0.scroll < 0 && $0.scrolling })
-        #expect(frames.suffix(10).allSatisfy { $0.scroll == 0 })
-    }
-
-    @Test func smallDipDoesNotScroll() {
-        // 扳機時食指晃 0.15 掌寬。
-        let frames = run([(2, 0.2, 0), (0, 0.1, -1.5), (0, 0.1, 1.5), (2, 0.3, 0)])
-        #expect(frames.allSatisfy { $0.scroll == 0 })
+    @Test func slowMovementDoesNotScroll() {
+        // 每秒 4 掌寬以下：手移動、手指慢慢彎伸都不捲。
+        let frames = run([(2, 0.2, 0), (2, 0.5, 4), (0, 0.5, -4), (2, 0.5, 2), (2, 0.5, -2)])
+        #expect(frames.allSatisfy { $0.scroll == 0 && $0.direction == .still })
         #expect(frames.dropFirst(3).allSatisfy { $0.scrolling })
     }
 
+    @Test func droppingHandAfterSlowRaiseDoesNotScroll() {
+        // 慢慢抬手（沒有算成一甩），再以每秒 7 掌寬放下來：往下要像彎手指那麼快（`downSpeed`）才算一甩。
+        let frames = run([(2, 0.2, 0), (2, 0.5, 3), (2, 0.2, 0), (0, 0.2, -7), (2, 0.5, 0)])
+        #expect(frames.allSatisfy { $0.scroll == 0 })
+    }
+
+    @Test func fastReturnRightAfterFlickDoesNotScrollBack() {
+        // 往下甩之後，手指伸直回來也可能很快（每秒 7.5 掌寬），但在 `refractory` 秒內，不算往上甩。
+        let frames = run([(2, 0.2, 0), (0, 4.0 / 30, -15), (0, 0.3, 0), (2, 8.0 / 30, 7.5), (2, 1, 0)])
+        #expect(frames.allSatisfy { $0.scroll <= 0 })
+    }
+
+    @Test func quickCurlBeforeNextFlickUpDoesNotScrollDown() {
+        // 往上甩、花 1 秒慢慢收回，下一次往上甩之前先很快彎一下手指（預備動作，在上一下開始後約 1.2 秒）：不算往下甩。
+        let frames = run([(2, 0.2, 0), (2, 4.0 / 30, 15), (2, 1, -2), (0, 4.0 / 30, -12), (2, 4.0 / 30, 15), (2, 0.5, 0)])
+        #expect(frames.allSatisfy { $0.scroll >= 0 })
+        #expect(total(frames.suffix(19)) > 0)
+    }
+
+    @Test func oppositeFlickAfterPauseScrolls() {
+        // 往下甩、停 2 秒後往上甩：換方向。
+        let frames = run([(2, 0.2, 0), (0, 4.0 / 30, -15), (2, 2, 0), (2, 4.0 / 30, 15), (2, 0.2, 0)])
+        #expect(total(frames.prefix(20)) < 0)
+        #expect(total(frames.suffix(10)) > 0)
+    }
+
+    @Test func pointingEndsScrolling() {
+        let frames = run([(2, 0.2, 0), (1, 0.3, 0)])
+        #expect(frames.suffix(3).allSatisfy { !$0.scrolling })
+    }
+
     @Test func briefTwoFingersDoNotScroll() {
-        let frames = run([(1, 0.2, 0), (2, 2.0 / 30, 0), (0, 0.2, -3)])
+        let frames = run([(1, 0.2, 0), (2, 2.0 / 30, 0), (0, 0.2, -15)])
         #expect(frames.allSatisfy { $0.scroll == 0 && !$0.scrolling })
     }
 }

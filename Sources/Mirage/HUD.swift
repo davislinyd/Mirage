@@ -65,9 +65,13 @@ final class HUD {
         switch mode {
         case .pointing: ("hand.point.up.left.fill", "指向：按鍵點擊・扳機右鍵・按住扳機縮放")
         case .pressing: ("hand.tap.fill", "按住：移動手拖曳，伸直放開")
-        case .scrolling(.down): ("arrow.down", "兩指捲動：彎手指，內容往下")
-        case .scrolling(.up): ("arrow.up", "三指捲動：彎手指，內容往上")
+        case .scrolling(.still): ("arrow.up.and.down", scrolling)
+        case .scrolling(.up): ("arrow.up", scrolling)
+        case .scrolling(.down): ("arrow.down", scrolling)
         case .zooming: ("plus.magnifyingglass", "縮放：手往上放大、往下縮小")
         }
     }
+
+    /// 捲動時文字不隨方向改變，面板寬度才不會跳動。
+    private static let scrolling = "兩指捲動：指尖往上、往下甩，慢慢收回"
 }
