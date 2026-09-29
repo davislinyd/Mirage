@@ -383,8 +383,9 @@ private func makeHand(
         )).filter { $0.scroll != nil }
         let first = try #require(scrolling.first)
         let cursor = try #require(first.cursor)
-        // 彎下是往下甩：捲動 0.89 × 200 pt，內容往下；之後是慣性，伸直回來不往回捲。
-        #expect(abs((first.scroll ?? 0) + 178) < 1.5)
+        // 彎下是往下甩（一幀內 0.89 掌寬，每秒 13.35 掌寬）：以 13.35 ÷ 往下門檻 8 × 1200 = 每秒約 2000 pt 開始捲、
+        // 逐漸減速，內容往下；伸直回來不往回捲。
+        #expect(abs((first.scroll ?? 0) + 62) < 2)
         #expect(scrolling.allSatisfy { ($0.scroll ?? 0) < 0 && $0.scrolling == .down })
         // 防抖在中速移動後可能留下幾 pt 的偏差，下次快速移動才收回。
         #expect(abs(cursor.x - 500) < 5 && abs(cursor.y - 250) < 5)
@@ -762,17 +763,25 @@ private func makeHand(
     @Test func flickDownScrollsAndSlowReturnDoesNot() {
         // 0.13 秒往下甩 2 掌寬（彎手指），停一下，再花 1 秒收回來。
         let frames = run([(2, 0.2, 0), (0, 4.0 / 30, -15), (0, 0.2, 0), (2, 1, 2), (2, 2, 0)])
-        // 甩的那幾幀：捲動距離 = 指尖移動 × `scale`，內容跟著指尖往下。
-        #expect(abs(total(frames.dropFirst(6).prefix(4)) + 400) < 2)
-        // 之後慣性繼續往下捲、逐漸停下；收回來不往上捲。
+        // 內容往下，以這一甩的速度開始捲、逐漸減速停下，每幀不會忽大忽小；收回來不往上捲。
         #expect(total(frames) < -600)
         #expect(frames.allSatisfy { $0.scroll <= 0 })
+        let glide = frames.dropFirst(8).map { abs($0.scroll) }
+        #expect(zip(glide, glide.dropFirst()).allSatisfy { $1 <= $0 + 1 })
         #expect(frames.suffix(5).allSatisfy { $0.scroll == 0 && $0.direction == .still && $0.scrolling })
+    }
+
+    @Test func glideDoesNotDependOnHowTheFlickEnds() {
+        // 同樣速度的一甩：甩到底馬上慢慢收回，或先停 0.2 秒再收回，滑的距離一樣。
+        let quick = run([(2, 0.2, 0), (0, 4.0 / 30, -15), (2, 1, 1.5), (2, 2, 0)])
+        let paused = run([(2, 0.2, 0), (0, 4.0 / 30, -15), (0, 0.2, 0), (2, 1, 1.5), (2, 1.8, 0)])
+        #expect(total(quick) < -600)
+        #expect(abs(total(quick) - total(paused)) <= abs(total(quick)) * 0.05)
     }
 
     @Test func flickUpScrollsContentUp() {
         let frames = run([(2, 0.2, 0), (2, 4.0 / 30, 15), (2, 0.2, 0), (0, 1, -2), (2, 1, 0)])
-        #expect(abs(total(frames.dropFirst(6).prefix(4)) - 400) < 2)
+        #expect(total(frames) > 600)
         #expect(frames.allSatisfy { $0.scroll >= 0 })
         #expect(frames.dropFirst(6).prefix(10).allSatisfy { $0.direction == .up })
     }
@@ -797,8 +806,8 @@ private func makeHand(
     }
 
     @Test func quickCurlBeforeNextFlickUpDoesNotScrollDown() {
-        // 往上甩、花 1 秒慢慢收回，下一次往上甩之前先很快彎一下手指（預備動作，在上一下開始後約 1.2 秒）：不算往下甩。
-        let frames = run([(2, 0.2, 0), (2, 4.0 / 30, 15), (2, 1, -2), (0, 4.0 / 30, -12), (2, 4.0 / 30, 15), (2, 0.5, 0)])
+        // 往上甩、花 0.9 秒慢慢收回，下一次往上甩之前先很快彎一下手指（預備動作，在上一下開始後約 1.07 秒）：不算往下甩。
+        let frames = run([(2, 0.2, 0), (2, 4.0 / 30, 15), (2, 0.9, -2), (0, 4.0 / 30, -12), (2, 4.0 / 30, 15), (2, 0.5, 0)])
         #expect(frames.allSatisfy { $0.scroll >= 0 })
         #expect(total(frames.suffix(19)) > 0)
     }
@@ -818,6 +827,26 @@ private func makeHand(
     @Test func briefTwoFingersDoNotScroll() {
         let frames = run([(1, 0.2, 0), (2, 2.0 / 30, 0), (0, 0.2, -15)])
         #expect(frames.allSatisfy { $0.scroll == 0 && !$0.scrolling })
+    }
+}
+
+@Suite struct ScrollSmootherTests {
+    @Test func spreadsCameraFramesOverDisplayFrames() {
+        // 相機每 1/30 秒給 60 pt（每秒 1800 pt），螢幕每 1/120 秒送一次：每次最多約 20 pt，總量不變。
+        var smoother = ScrollSmoother()
+        var sent: [Double] = []
+        for tick in 0..<120 {
+            if tick % 4 == 0, tick < 60 { smoother.add(60) }
+            sent.append(smoother.step(1.0 / 120) ?? 0)
+        }
+        #expect(abs(sent.reduce(0, +) - 900) <= 1)
+        #expect(sent.max() ?? 0 <= 25)
+        #expect(smoother.isIdle)
+    }
+
+    @Test func idleSmootherSendsNothing() {
+        var smoother = ScrollSmoother()
+        #expect(smoother.isIdle && smoother.step(1.0 / 120) == nil)
     }
 }
 

@@ -75,6 +75,10 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private var controlMode: ControlMode?
     /// 已送出左鍵按下、還沒送出放開。
     private var pressed = false
+    /// 捲動平均分到約 120 Hz 送出（`ScrollSmoother`），沒有要送的時候停掉。
+    private var smoother = ScrollSmoother()
+    private var scrollTimer: DispatchSourceTimer?
+    private var lastScrollTick = 0.0
 
     init(sink: @escaping @MainActor @Sendable (Event) -> Void) {
         self.sink = sink
@@ -140,6 +144,9 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
                 device.unlockForConfiguration()
                 waiting = nil
                 release()
+                scrollTimer?.cancel()
+                scrollTimer = nil
+                smoother = ScrollSmoother()
                 if case .controlling(var controller) = mode {
                     controller.deactivate()
                     mode = .controlling(controller)
@@ -233,7 +240,8 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             if output.scrolling != nil, let rise = output.rise { Self.log.info("rise \(rise, format: .fixed(precision: 2))") }
             if let scroll = output.scroll {
                 Self.log.notice("scroll \(scroll, format: .fixed(precision: 0))")
-                send(scroll: scroll)
+                smoother.add(scroll)
+                startScrollTimer()
             }
             publish(output.state)
             publish(scrolling: output.scrolling)
@@ -302,6 +310,25 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             pressed = type == .leftMouseDown
         }
         event?.post(tap: .cghidEventTap)
+    }
+
+    /// 在 `queue` 上約每 8 ms 送出一次捲動，送完就停。
+    private func startScrollTimer() {
+        guard scrollTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(8), leeway: .milliseconds(1))
+        lastScrollTick = ProcessInfo.processInfo.systemUptime
+        timer.setEventHandler { [self] in
+            let now = ProcessInfo.processInfo.systemUptime
+            if let scroll = smoother.step(now - lastScrollTick) { send(scroll: scroll) }
+            lastScrollTick = now
+            if smoother.isIdle {
+                scrollTimer?.cancel()
+                scrollTimer = nil
+            }
+        }
+        timer.resume()
+        scrollTimer = timer
     }
 
     /// 像素單位的連續捲動，同觸控板。內容跟著指尖移動，不看系統的「自然捲動」設定：指尖往上時內容往上，等於滾輪
