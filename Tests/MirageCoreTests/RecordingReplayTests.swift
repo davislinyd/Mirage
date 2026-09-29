@@ -62,9 +62,10 @@ private enum Replay {
     /// 重播 `phase` 的每一幀，且每一幀都在控制中：不在 Active 時換一個新的 controller 直接進入 Active，等同使用者
     /// 一直開著控制做這些動作。
     /// `removing` 的關節當作看不到，例如拿掉食指 DIP 與指尖就不會觸發按鍵，得到不鎖定的游標；`stabilized` 為 false
-    /// 時關掉防抖。
+    /// 時關掉防抖；`bystander` 為 true 時，階段開始 1 秒後每幀多一隻旁人的手：主要手的複本，往另一邊移半個畫面、
+    /// 信心調到最高。
     static func active(
-        _ frames: [FrameRecord], phase: Phase, removing: [Joint] = [], stabilized: Bool = true
+        _ frames: [FrameRecord], phase: Phase, removing: [Joint] = [], stabilized: Bool = true, bystander: Bool = false
     ) throws -> [CursorController.Output] {
         let calibration = try calibrate(frames)
         var controller: CursorController?
@@ -80,10 +81,18 @@ private enum Replay {
                 fresh.activate(at: frame.t - 1.0 / 30)
                 controller = fresh
             }
-            let hands = frame.hands.map { hand in
+            var hands = frame.hands.map { hand in
                 var hand = hand
                 for joint in removing { hand.joints[joint.rawValue].c = 0 }
                 return hand
+            }
+            let start = frames.first { $0.phase == phase }?.t ?? frame.t
+            if bystander, frame.t - start >= 1, var copy = frame.hands.primary {
+                let x = copy.joints.filter { $0.c > 0 }.map(\.x).reduce(0, +) / Double(max(1, copy.joints.filter { $0.c > 0 }.count))
+                let shift = x < 0.5 ? 0.5 : -0.5
+                copy.chirality = .right
+                copy.joints = copy.joints.map { JointSample(x: $0.x + shift, y: $0.y, c: $0.c > 0 ? 1 : 0) }
+                hands.append(copy)
             }
             let output = controller!.update(hands: hands, width: frame.width, height: frame.height, at: frame.t)
             outputs.append(output)
@@ -124,12 +133,15 @@ private enum Replay {
     }
 
     @Test(arguments: Replay.gestures) func thumbTriggersRightClickAndEscape(name: String) throws {
-        // 三份錄影各扳機 12–16 下、按住 5–7 下、兩指扳機約 10 下。
+        // 三份錄影各扳機 12–16 下（按住 0.1–0.4 秒）、按住 5–7 下（0.6–1.2 秒）、兩指扳機約 10 下。
         let frames = try Replay.load(name)
         let trigger = count(try Replay.active(frames, phase: .trigger))
         #expect(trigger.right >= 9 && trigger.left == 0 && trigger.escape == 0, "\(trigger)")
-        let hold = count(try Replay.active(frames, phase: .triggerHold))
-        #expect(hold.right >= 5 && hold.left == 0, "\(hold)")
+        // 按住超過 0.5 秒是縮放，不是右鍵。
+        let holding = try Replay.active(frames, phase: .triggerHold)
+        let hold = count(holding)
+        let zooms = zip(holding, holding.dropFirst()).filter { !$0.0.zooming && $0.1.zooming }.count
+        #expect(zooms >= 5 && hold.right == 0 && hold.left == 0, "\(hold) zooms \(zooms)")
         let two = count(try Replay.active(frames, phase: .twoFingerTrigger))
         #expect(two.escape >= 8 && two.left == 0 && two.right <= 1, "\(two)")
         for phase in [Phase.move, .halfBend, .reverseBend, .fist, .daily] {
@@ -199,6 +211,15 @@ private enum Replay {
 }
 
 @Suite(.enabled(if: Replay.controlsAvailable)) struct ControlsReplayTests {
+    @Test(arguments: Replay.controlsWithTriggers) func bystanderHandChangesNothing(name: String) throws {
+        let frames = try Replay.load(name)
+        for phase in [Phase.moveAndTap, .moveAndTrigger, .twoFingerTrigger, .halfBend, .threeFingerBend] {
+            let alone = try Replay.active(frames, phase: phase)
+            let crowded = try Replay.active(frames, phase: phase, bystander: true)
+            #expect(crowded == alone, "\(phase)")
+        }
+    }
+
     private func leftClicks(_ name: String, _ phases: [Phase]) throws -> Int {
         let frames = try Replay.load(name)
         return try phases.reduce(0) { total, phase in

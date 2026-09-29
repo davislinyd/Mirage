@@ -439,11 +439,38 @@ private func makeHand(
         #expect(outputs(tap).allSatisfy { $0.button == nil })
     }
 
-    @Test func thumbTriggerRightClicks() {
+    @Test func thumbTriggerRightClicksOnRelease() throws {
         let trigger: [Segment] = [(pointing(0.5, 0.5), 1), (pointing(0.5, 0.5, pressed: true), 0.2), (pointing(0.5, 0.5), 0.5)]
         let frames = outputs(woken() + trigger)
         #expect(frames.filter(\.rightClick).count == 1)
-        #expect(frames.allSatisfy { $0.button == nil && !$0.escape })
+        // 拇指抬起才送出：按住超過 `zoomDelay` 會變成縮放。
+        let released = 30 + 30 + 6
+        #expect(try #require(frames.firstIndex { $0.rightClick }) >= released)
+        #expect(frames.allSatisfy { $0.button == nil && !$0.escape && $0.zoom == nil && !$0.zooming })
+    }
+
+    @Test func holdingTriggerZoomsWithHandHeight() {
+        func hold(to y: Double) -> [CursorController.Output] {
+            let raise: [Segment] = (1...15).map { i in (pointing(0.5, 0.5 + (y - 0.5) * Double(i) / 15, pressed: true), 1.0 / 30) }
+            return outputs(woken((pointing(0.5, 0.5), 1), (pointing(0.5, 0.5, pressed: true), 0.6)) + raise + [(pointing(0.5, y), 0.5)])
+        }
+        let up = hold(to: 0.62)
+        #expect(up.contains { $0.zooming })
+        #expect(up.compactMap(\.zoom).reduce(0, +) >= 1)
+        #expect(up.compactMap(\.zoom).allSatisfy { $0 > 0 })
+        #expect(!up.contains { $0.rightClick })
+        // 縮放時游標停在按下前的位置。
+        let zooming = up.filter(\.zooming)
+        #expect(zooming.allSatisfy { $0.cursor == zooming.first?.cursor })
+        let down = hold(to: 0.38)
+        #expect(down.compactMap(\.zoom).reduce(0, +) <= -1)
+        #expect(!down.contains { $0.rightClick })
+    }
+
+    @Test func holdingTriggerStillDoesNothing() {
+        let frames = outputs(woken((pointing(0.5, 0.5), 1), (pointing(0.5, 0.5, pressed: true), 0.8), (pointing(0.5, 0.5), 0.5)))
+        #expect(frames.contains { $0.zooming })
+        #expect(!frames.contains { $0.rightClick || $0.zoom != nil })
     }
 
     @Test func triggerWhileMovingDoesNotBlockNextRightClick() {
@@ -459,6 +486,46 @@ private func makeHand(
         let clicks = frames.indices.filter { frames[$0].rightClick }
         #expect(clicks.count == 1)
         #expect(clicks.allSatisfy { $0 > frames.count - 25 })
+    }
+
+    @Test func bystanderHandDoesNotTakeOver() {
+        // 喚醒並指向後，畫面另一邊出現旁人的手（右手、信心更高、一直在動），輸出要和沒有旁人時完全相同。
+        func bystander(_ i: Int) -> Hand {
+            var hand = makeHand(pointing: true, confidence: 0.99, offset: Vec2(x: 0.3 + Double(i % 10) * 0.005, y: 0))
+            hand.chirality = .right
+            return hand
+        }
+        let moving: [Segment] = (0..<60).map { i in (pointing(0.45 + Double(i) * 0.002, 0.5), 1.0 / 30) }
+        let alone = outputs(woken((pointing(0.45, 0.5), 1)) + moving)
+        var controller = CursorController(
+            calibration: Calibration(palmWidth: 153.6, minX: 0.4, minY: 0.4, maxX: 0.6, maxY: 0.6), screenWidth: 1000, screenHeight: 500
+        )
+        var frame = 0
+        var crowded: [CursorController.Output] = []
+        for segment in woken((pointing(0.45, 0.5), 1)) + moving {
+            for _ in 0..<Int((segment.seconds * 30).rounded()) {
+                var hands = segment.hand.map { [$0] } ?? []
+                if frame >= 45 { hands.append(bystander(frame)) }
+                crowded.append(controller.update(hands: hands, width: 1280, height: 720, at: Double(frame) / 30))
+                frame += 1
+            }
+        }
+        #expect(alone.last?.state == .active)
+        #expect(crowded == alone)
+    }
+
+    @Test func modeFollowsGestures() {
+        #expect(CursorController.Output(state: .idle).mode == nil)
+        #expect(CursorController.Output(state: .armed).mode == nil)
+        #expect(CursorController.Output(state: .active).mode == .pointing)
+        #expect(CursorController.Output(state: .active, pressed: true).mode == .pressing)
+        #expect(CursorController.Output(state: .active, scrolling: .up).mode == .scrolling(.up))
+        #expect(CursorController.Output(state: .active, zooming: true).mode == .zooming)
+        // 實際的手：按住按鍵時是按住，兩指是捲動。
+        let tap = outputs(woken((pointing(0.5, 0.5), 1), (pointing(0.5, 0.5, tapped: true), 0.8)))
+        #expect(tap.contains { $0.mode == .pressing })
+        let scroll = outputs(woken((pointing(0.5, 0.5), 1), (pointing(0.5, 0.5, twoFingers: true), 0.5)))
+        #expect(scroll.last?.mode == .scrolling(.down))
     }
 
     @Test func losingHandDeactivates() throws {

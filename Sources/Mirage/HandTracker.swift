@@ -8,7 +8,7 @@ import MirageCore
 /// 相機 → Vision → 校準或游標控制 → CGEvent。可變狀態只在 `queue` 上存取；推論在 `workQueue`，由 `busy` 保證
 /// 同時只有一個，忙碌時只保留最新一幀（M0.2 的非同步推論）。因此標記為 @unchecked Sendable。
 final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
-    /// 動作紀錄：狀態、點擊、右鍵、捲動模式與送出的捲動記為 notice（會保存），捲動模式中每幀的食指高度記為 info
+    /// 動作紀錄：狀態、點擊、右鍵、捲動模式、送出的捲動與縮放記為 notice（會保存），捲動模式中每幀的食指高度記為 info
     /// （只在記憶體，用 `log stream --level info` 即時看）。
     /// `log show --predicate 'subsystem == "io.github.davislinyd.Mirage"' --last 1h --style compact`
     private static let log = Logger(subsystem: "io.github.davislinyd.Mirage", category: "gesture")
@@ -17,6 +17,8 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         case state(ControlState)
         /// 捲動開始、結束或換方向。
         case scrolling(Scroller.Direction?)
+        /// 控制中的操作模式；不在控制中時為 nil。
+        case mode(ControlMode?)
         case calibration(CalibrationSession.Progress)
     }
 
@@ -70,6 +72,7 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private var mode = Mode.waiting
     private var state = ControlState.idle
     private var scrolling: Scroller.Direction?
+    private var controlMode: ControlMode?
     /// 已送出左鍵按下、還沒送出放開。
     private var pressed = false
 
@@ -223,6 +226,10 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
                 Self.log.notice("escape")
                 pressEscape()
             }
+            if let zoom = output.zoom {
+                Self.log.notice("zoom \(zoom)")
+                press(zoom: zoom)
+            }
             if output.scrolling != nil, let rise = output.rise { Self.log.info("rise \(rise, format: .fixed(precision: 2))") }
             if let scroll = output.scroll {
                 Self.log.notice("scroll \(scroll, format: .fixed(precision: 0))")
@@ -230,6 +237,7 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             }
             publish(output.state)
             publish(scrolling: output.scrolling)
+            publish(mode: output.mode)
         }
     }
 
@@ -250,6 +258,18 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private func pressEscape() {
         for down in [true, false] {
             CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_Escape), keyDown: down)?.post(tap: .cghidEventTap)
+        }
+    }
+
+    /// 放大送 ⌘=、縮小送 ⌘−，每格一次：瀏覽器、Finder、預覽程式等都用這組快捷鍵縮放。
+    private func press(zoom: Int) {
+        let key = CGKeyCode(zoom > 0 ? kVK_ANSI_Equal : kVK_ANSI_Minus)
+        for _ in 0..<abs(zoom) {
+            for down in [true, false] {
+                let event = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: down)
+                event?.flags = .maskCommand
+                event?.post(tap: .cghidEventTap)
+            }
         }
     }
 
@@ -313,6 +333,14 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         scrolling = nil
         Self.log.notice("state \(String(describing: state), privacy: .public)")
         emit(.state(state))
+        if state != .active { publish(mode: nil) }
+    }
+
+    private func publish(mode: ControlMode?) {
+        guard mode != controlMode else { return }
+        if mode == .zooming { Self.log.notice("zooming") }
+        controlMode = mode
+        emit(.mode(mode))
     }
 
     private func publish(scrolling: Scroller.Direction?) {

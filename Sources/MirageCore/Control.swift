@@ -64,15 +64,27 @@ public struct ControlStateMachine: Sendable {
     }
 }
 
+/// 控制中的操作模式，給 HUD 顯示。
+public enum ControlMode: Sendable, Equatable {
+    /// 只伸食指：移動游標、按鍵點擊、扳機右鍵。
+    case pointing
+    /// 左鍵按著：移動手就拖曳。
+    case pressing
+    /// 兩指或三指捲動，值為彎手指時內容移動的方向。
+    case scrolling(Scroller.Direction)
+    /// 扳機按住：手往上放大、往下縮小。
+    case zooming
+}
+
 /// 主要手 → 啟用狀態 → 游標位置（螢幕 pt，原點左下）、左右鍵與捲動。只有 Active 時輸出。
 public struct CursorController: Sendable {
-    public struct Output: Sendable {
+    public struct Output: Sendable, Equatable {
         public var state: ControlState
         public var cursor: Vec2?
         public var button: TapClicker.Button?
         /// 這一幀要捲動的 pt，指尖往上為正，內容跟著指尖移動。
         public var scroll: Double?
-        /// 右鍵單擊：只伸食指時的扳機。
+        /// 右鍵單擊：只伸食指時的扳機，拇指抬起時送出。
         public var rightClick = false
         /// 按一下 ESC：兩指捲動時的扳機。
         public var escape = false
@@ -80,6 +92,20 @@ public struct CursorController: Sendable {
         public var scrolling: Scroller.Direction?
         /// 食指尖比指根高出幾個掌寬，供動作紀錄查捲動。
         public var rise: Double?
+        /// 這一幀要縮放的格數：放大為正（⌘=），縮小為負（⌘−）。
+        public var zoom: Int?
+        /// 扳機按住超過 `zoomDelay` 秒，手上下移動就縮放；游標停在按下前的位置。
+        public var zooming = false
+        /// 左鍵按著（按鍵按住或拖曳中）。
+        public var pressed = false
+
+        /// HUD 顯示的操作模式；不在控制中時為 nil。
+        public var mode: ControlMode? {
+            guard state == .active else { return nil }
+            if zooming { return .zooming }
+            if let scrolling { return .scrolling(scrolling) }
+            return pressed ? .pressing : .pointing
+        }
     }
 
     public let calibration: Calibration
@@ -98,11 +124,16 @@ public struct CursorController: Sendable {
     public var lead = 0.033
     /// 開始捲動時，游標回到此秒數內最後一次只有食指指向時的位置：伸直中指時食指尖也會跟著動。
     public var pointMemory = 0.5
+    /// 扳機按住超過此秒數就是縮放，放開也不送右鍵。錄影中一般的扳機按住 0.1–0.4 秒，刻意按住 0.6–1.2 秒。
+    public var zoomDelay = 0.5
+    /// pt：縮放時，手每上下移動這麼多（以游標的比例換算，不受螢幕邊緣限制）縮放一格。
+    public var zoomStep = 150.0
     /// 掌寬／秒：手掌速度低於此值，拇指扳機才算右鍵。移動游標時拇指也會晃，錄影中每 10 秒約誤觸 1 次；但扳機時
     /// 整隻手也會跟著動，比按鍵點擊時快：0.3 會漏掉大半，0.8 只漏 3/41 下，移動時誤觸剩 1/2。
     public var rightClickStillSpeed = 0.8
 
     private var machine = ControlStateMachine()
+    private var operatorLock = OperatorLock()
     private var wake = WakeDetector()
     private var clicker = TapClicker()
     private var scroller = Scroller()
@@ -110,6 +141,8 @@ public struct CursorController: Sendable {
     private var rightTrigger = TriggerDetector()
     /// 右鍵扳機期間、最近 `TriggerDetector.window` 秒內的拇指距離與游標，點在拇指開始動之前的位置。
     private var triggerCursors: [(t: Double, distance: Double, cursor: Vec2)] = []
+    /// 按住中的扳機：按下的時間、右鍵要點的位置（拇指開始動之前），以及縮放時上一格的游標高度。
+    private var thumb: (t: Double, cursor: Vec2?, anchor: Double?)?
     /// 兩指捲動時的扳機 = ESC。
     private var escapeTrigger = TriggerDetector()
     /// 上一幀輸出的游標。
@@ -134,7 +167,11 @@ public struct CursorController: Sendable {
     }
 
     public mutating func update(hands: [Hand], width: Int, height: Int, at t: Double) -> Output {
-        let geometry = hands.primary.map { HandGeometry(hand: $0, width: width, height: height) }
+        // 喚醒後只跟著操作者的手（`OperatorLock`）；狀態用上一幀的，這一幀喚醒時還是待命，取主要手。
+        let hand = operatorLock.select(
+            hands, width: width, height: height, palm: calibration.palmWidth, locked: machine.state != .idle
+        )
+        let geometry = hand.map { HandGeometry(hand: $0, width: width, height: height) }
         let measuredPalm = geometry?.palmWidth
         if let measuredPalm { lastPalm = (measuredPalm, t) }
         let palm = measuredPalm ?? lastPalm.flatMap { t - $0.t <= palmHold ? $0.width : nil }
@@ -174,6 +211,7 @@ public struct CursorController: Sendable {
             clicker = TapClicker()
             scroller = Scroller()
             held = nil
+            thumb = nil
             return Output(state: state, cursor: nil)
         }
         // 食指尖比指根高出幾個掌寬：彎手指捲動，整隻手移動時不變。
@@ -190,6 +228,7 @@ public struct CursorController: Sendable {
             clicker = TapClicker()
             rightTrigger = TriggerDetector()
             triggerCursors = []
+            thumb = nil
             if held == nil { held = pointed.flatMap { t - $0.t <= pointMemory ? $0.cursor : nil } ?? lastCursor }
             let escape = escapeTrigger.update(distance: distance, rise: rise, posed: posed, at: t) && sized
             return Output(
@@ -222,15 +261,39 @@ public struct CursorController: Sendable {
         triggerCursors.removeAll { t - $0.t > rightTrigger.window }
         let still = (clicker.palmSpeed ?? .infinity) < rightClickStillSpeed
         let triggered = rightTrigger.update(distance: distance, rise: rise, posed: posed, at: t)
-        let rightClick = triggered && sized && still
+        let accepted = triggered && sized && still
         // 不算數的扳機（例如移動途中拇指跟著晃）不留在按下狀態：拇指平常若沒抬高，要等抬起 `lift` 才放開，會吃掉下一下。
-        if triggered, !rightClick { rightTrigger = TriggerDetector() }
-        let top = triggerCursors.map(\.distance).max()
-        let rightAt = rightClick ? triggerCursors.last(where: { $0.distance == top })?.cursor : nil
-        if rightClick { triggerCursors = [] }
-        lastCursor = click.cursor
-        if pointing, let shown = click.cursor { pointed = (shown, t) }
-        return Output(state: state, cursor: rightAt ?? click.cursor, button: click.button, scroll: scroll, rightClick: rightClick)
+        if triggered, !accepted { rightTrigger = TriggerDetector() }
+        if accepted {
+            let top = triggerCursors.map(\.distance).max()
+            thumb = (t, triggerCursors.last(where: { $0.distance == top })?.cursor ?? click.cursor, nil)
+            triggerCursors = []
+        }
+        // 放開時還沒到 `zoomDelay` 是右鍵；按住超過就是縮放：手每上下 `zoomStep` pt 縮放一格，放開不送右鍵。
+        var rightClick = false
+        var zoom: Int?
+        var zooming = false
+        var shown = click.cursor
+        if let hold = thumb {
+            shown = hold.cursor ?? shown
+            if !rightTrigger.isPressed {
+                rightClick = t - hold.t < zoomDelay
+                thumb = nil
+            } else if t - hold.t >= zoomDelay, let p = point {
+                let y = (p.y - calibration.minY) / (calibration.maxY - calibration.minY) * screenHeight
+                zooming = true
+                let anchor = hold.anchor ?? y
+                let steps = Int(((y - anchor) / zoomStep).rounded(.towardZero))
+                if steps != 0 { zoom = steps }
+                thumb?.anchor = anchor + Double(steps) * zoomStep
+            }
+        }
+        lastCursor = shown
+        if pointing, let shown { pointed = (shown, t) }
+        return Output(
+            state: state, cursor: shown, button: click.button, scroll: scroll, rightClick: rightClick, zoom: zoom, zooming: zooming,
+            pressed: clicker.isPressed
+        )
     }
 
     /// 快捷鍵、螢幕鎖定等外部原因停用：回到 Idle，須重新喚醒。

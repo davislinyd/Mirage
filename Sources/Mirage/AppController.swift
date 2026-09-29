@@ -14,6 +14,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     private let panel = CalibrationPanel()
     private let halo = CursorHalo()
+    private let hud = HUD()
     private var statusItem: NSStatusItem?
     private let stateItem = NSMenuItem()
     private let enableItem = NSMenuItem(title: "啟用（⌃⌥⌘M）", action: #selector(toggle), keyEquivalent: "")
@@ -128,6 +129,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             halo.show(state)
         case .scrolling(let direction):
             halo.showScrolling(direction)
+        case .mode(let mode):
+            hud.show(mode)
         case .calibration(let progress):
             // 取消後仍可能收到幾幀已排隊的進度。
             guard calibrating else { return }
