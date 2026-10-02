@@ -10,6 +10,8 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 cp "$(swift build -c release --show-bin-path)/Mirage" "$app/Contents/MacOS/"
 cp App/Info.plist "$app/Contents/"
+# build 號用建置時間，每次都不同；選單底部看得到，用來確認裝的是新版。要在簽章前改，Info.plist 在簽章範圍內。
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(date +%Y%m%d.%H%M%S)" "$app/Contents/Info.plist"
 identity=${MIRAGE_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"' '/"(Developer ID Application|Apple Development): /{print $2; exit}')}
 # Hardened Runtime 下要有相機 entitlement 才能用鏡頭。
 codesign --force --options runtime --entitlements App/Mirage.entitlements --sign "${identity:--}" "$app"

@@ -3,11 +3,15 @@ import ApplicationServices
 import AVFoundation
 import Carbon.HIToolbox
 import MirageCore
+import OSLog
+import Synchronization
 
-/// 選單列 App：狀態圖示與選單、全域快捷鍵、權限，以及螢幕鎖定與睡眠時暫停。
+/// 選單列 App：狀態圖示與選單、全域快捷鍵與敲掌托、權限，以及螢幕鎖定與睡眠時暫停。
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let calibrationKey = "calibration"
+    private static let knockImpactKey = "knockImpact"
+    private static let knockMaxGapKey = "knockMaxGap"
 
     private lazy var tracker = HandTracker { [weak self] event in
         self?.handle(event)
@@ -20,6 +24,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let enableItem = NSMenuItem(title: "啟用（⌃⌥⌘M）", action: #selector(toggle), keyEquivalent: "")
     private let accessibilityItem = NSMenuItem(title: "允許輔助使用（移動游標需要）…", action: #selector(openAccessibility), keyEquivalent: "")
     private var hotKey: HotKey?
+    /// 在掌托敲兩下切換啟用；停用時也在讀，才能敲回來。
+    private var accelerometer: Accelerometer?
+    /// 加速度計回呼在自己的 queue 上用，選單的滑桿在主執行緒改門檻。
+    nonisolated private let knockDetector = Mutex(KnockDetector())
+    /// 敲擊的滑桿；沒有加速度計時隱藏。
+    private var knockItems: [NSMenuItem] = []
+    private let cpuItem = NSMenuItem()
+    /// 選單開著時每秒更新 `cpuItem`。
+    private var cpuTimer: Timer?
+    private var cpuSample = (cpu: 0.0, wall: 0.0)
     private var ready = false
     /// 相機無法使用的原因。
     private var problem: String?
@@ -34,12 +48,21 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         stateItem.isEnabled = false
+        cpuItem.isEnabled = false
         let calibrateItem = NSMenuItem(title: "重新校準", action: #selector(recalibrate), keyEquivalent: "")
         for item in [enableItem, calibrateItem, accessibilityItem] {
             item.target = self
         }
-        menu.items = [
-            stateItem, .separator(), enableItem, calibrateItem, accessibilityItem, .separator(),
+        knockItems = knockSliders()
+        // build 號是建置時間（scripts/build-app.sh），用來確認裝的是新版。
+        let info = Bundle.main.infoDictionary
+        let versionItem = NSMenuItem(
+            title: "Mirage \(info?["CFBundleShortVersionString"] as? String ?? "?")（build \(info?["CFBundleVersion"] as? String ?? "?")）",
+            action: nil, keyEquivalent: ""
+        )
+        versionItem.isEnabled = false
+        menu.items = [stateItem, .separator(), enableItem, calibrateItem, accessibilityItem, .separator()] + knockItems + [
+            cpuItem, .separator(), versionItem,
             NSMenuItem(title: "結束 Mirage", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),
         ]
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -49,6 +72,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotKey = HotKey(keyCode: kVK_ANSI_M, modifiers: controlKey | optionKey | cmdKey) { [weak self] in
             self?.toggle()
         }
+        startKnocks()
         panel.onCancel = { [weak self] in
             self?.cancelCalibration()
         }
@@ -92,9 +116,101 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         accessibilityItem.isHidden = AXIsProcessTrusted()
     }
 
+    func menuWillOpen(_ menu: NSMenu) {
+        cpuItem.title = "Mirage CPU：量測中…"
+        cpuSample = Self.cpuTime()
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateCPU() }
+        }
+        // 選單開著時 run loop 在 event tracking mode，只排在預設 mode 的 timer 不會觸發。
+        RunLoop.main.add(timer, forMode: .common)
+        cpuTimer = timer
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        cpuTimer?.invalidate()
+        cpuTimer = nil
+    }
+
+    private func updateCPU() {
+        let now = Self.cpuTime()
+        cpuItem.title = String(format: "Mirage CPU：%.0f%%", (now.cpu - cpuSample.cpu) / (now.wall - cpuSample.wall) * 100)
+        cpuSample = now
+    }
+
+    /// 這個行程用掉的 CPU 時間（user＋system）與經過時間，單位秒。兩者相除以一個核心為 100%，同活動監視器與 `top`。
+    private static func cpuTime() -> (cpu: Double, wall: Double) {
+        var usage = rusage()
+        getrusage(RUSAGE_SELF, &usage)
+        func seconds(_ time: timeval) -> Double { Double(time.tv_sec) + Double(time.tv_usec) / 1e6 }
+        return (seconds(usage.ru_utime) + seconds(usage.ru_stime), ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// 敲擊力道（`impact`）與兩下最長間隔（`maxGap`）。設定存在 UserDefaults，沒有時用 `KnockDetector` 的預設值。
+    /// 力道下限 0.03 g：打字最高 0.026 g；0.04 g 以下還沒有錄影驗證。間隔下限 0.3 秒，要比 `minGap` 長。
+    private func knockSliders() -> [NSMenuItem] {
+        let defaults = UserDefaults.standard
+        let impact = defaults.object(forKey: Self.knockImpactKey) as? Double ?? KnockDetector().impact
+        let maxGap = defaults.object(forKey: Self.knockMaxGapKey) as? Double ?? KnockDetector().maxGap
+        knockDetector.withLock {
+            $0.impact = impact
+            $0.maxGap = maxGap
+        }
+        let strength = MenuSlider(
+            title: "敲擊力道", range: 0.03...0.12, step: 0.01, value: impact, ends: ("輕", "重"),
+            format: { String(format: "%.2f g", $0) }
+        ) { [weak self] value in
+            self?.knockDetector.withLock { $0.impact = value }
+            UserDefaults.standard.set(value, forKey: Self.knockImpactKey)
+        }
+        let gap = MenuSlider(
+            title: "兩下最長間隔", range: 0.3...1.0, step: 0.05, value: maxGap, ends: ("快", "慢"),
+            format: { String(format: "%.2f 秒", $0) }
+        ) { [weak self] value in
+            self?.knockDetector.withLock { $0.maxGap = value }
+            UserDefaults.standard.set(value, forKey: Self.knockMaxGapKey)
+        }
+        return [strength.item, gap.item]
+    }
+
     @objc private func toggle() {
         enabled.toggle()
         update()
+    }
+
+    /// 沒有加速度計（或系統更新後讀不到）時只記錄，快捷鍵照常。
+    /// `log show --predicate 'subsystem == "io.github.davislinyd.Mirage" AND category == "knock"' --last 1h --style compact`
+    private func startKnocks() {
+        let log = Logger(subsystem: "io.github.davislinyd.Mirage", category: "knock")
+        // 按鍵與觸控板點按（觸覺回饋）也會震機身。
+        let inputs: [CGEventType] = [.keyDown, .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp]
+        // 200 Hz：敲擊的振動頻率低，錄影降到 200 Hz 重播結果相同。
+        let accelerometer = Accelerometer(interval: 5000) { [weak self] t, x, y, z in
+            guard let self, let first = knockDetector.withLock({ $0.update(t: t, x: x, y: y, z: z) }) else { return }
+            let idle = inputs.map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) }.min()!
+            let lastInput = ProcessInfo.processInfo.systemUptime - idle
+            guard knockDetector.withLock({ $0.accepts(first: first, lastInput: lastInput) }) else {
+                log.notice("knock ignored: key or click \(first - lastInput, format: .fixed(precision: 2))s before")
+                return
+            }
+            log.notice("knock")
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self.knocked() }
+            }
+        }
+        do {
+            try accelerometer.start()
+            self.accelerometer = accelerometer
+        } catch {
+            log.error("accelerometer unavailable: \(String(describing: error), privacy: .public)")
+            for item in knockItems { item.isHidden = true }
+        }
+    }
+
+    private func knocked() {
+        // 螢幕鎖定、睡眠時不切換。
+        guard pauses.isEmpty else { return }
+        toggle()
     }
 
     @objc private func recalibrate() {

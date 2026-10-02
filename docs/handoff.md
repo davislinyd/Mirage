@@ -1,4 +1,4 @@
-# Mirage 交接（2026-09-30）
+# Mirage 交接（2026-10-01）
 
 接手時先讀這份文件、`README.md`（手勢、使用方式、各項評估結果）與 `docs/devlog.md`（每個決定的數據依據）。
 
@@ -37,6 +37,9 @@
 - 其他功能：
   - 操作者鎖定：只跟著喚醒的那隻手。
   - HUD：控制中在主螢幕右上角顯示目前模式。
+  - 敲兩下掌托：切換啟用，同 ⌃⌥⌘M。
+    - 選單可調力道與兩下最長間隔，並顯示 Mirage 的 CPU。
+    - 兩份 `knock` 錄影都調過參數，**還沒用新錄影驗證**。
 - 2.5D 深度、MediaPipe 手部模型與眼動都評估過，不可行；眼動見上一節。結果都在 README。
 
 ## 專案結構
@@ -54,6 +57,12 @@
   - `Scroller`（甩動捲動）、`ScrollSmoother`（App 端約 120 Hz 平均送出捲動）
   - `DesktopSwiper`（三指揮動，`HandTracker.press(desktop:)` 送 ⌃ 方向鍵）
   - `GatherDetector`（五指捏合 → ⌘M）
+- 敲兩下掌托：
+  - `Accelerometer`：IOKit 讀取器，是 MirageCore 裡唯一不是純邏輯的檔案。
+  - `KnockDetector`：判斷敲兩下。
+  - App 端：`AppController.startKnocks`、`knockSliders`、`MenuSlider`。
+  - 錄影：`mirage-spike/KnockRecorder`。
+  - 重播：`KnockReplayTests`。
 - 評估：`Gaze.swift`（眼動）、`DepthAnalysis.swift`（2.5D）；`tools/mediapipe-spike/`（手）與 `tools/gaze-spike/`（眼動）（虛擬環境、模型與快取不進版控）。
 
 ## 常用指令
@@ -64,6 +73,10 @@
 - 錄影：`swift run -c release mirage-spike <m0|gestures|precision|controls|gaze|depth|swipe|desktop|gather>`，存到 `recordings/`；`gaze` 可加 `--frames`（存影像）與 `--builtin`（固定內建螢幕）。
   - 錄影前先結束 Mirage，否則相機被占用。
   - 錄影時不要同時編譯，否則會掉幀。
+- 敲擊錄影：`swift run -c release mirage-spike knock`，只在終端機提示。
+  - 錄之前先結束 Mirage：`ReportInterval` 是全系統共用的，兩邊會互相改；Mirage 開著時，每敲兩下也會切換。
+  - `knock --check` 只讀 2 秒，印出取樣率。
+  - 敲擊的紀錄在 `log` 的 `knock` category。
 - 動作紀錄：`/usr/bin/log stream --predicate 'subsystem == "io.github.davislinyd.Mirage"' --level info --style compact`
   - zsh 有同名的內建指令，所以要寫完整路徑。
   - 實機試用時在背景存到檔案，試完再分析；捲動中每幀記錄食指高度與捲動量。
@@ -99,4 +112,9 @@
    - 已知風險：無名指要獨立伸直，有些人不好做；三指只要連續兩幀就啟動，擋誤觸靠速度門檻。
 6b. 耗電：待命時手部偵測降到約 10 fps（`FrameThrottle`），實測待命 CPU 18–28% → 11–14%（見 devlog）。實機看：待命時喚醒手勢（張手 → 握拳）有沒有比以前難喚醒。想再降：待命時降相機本身的幀率，或一段時間沒看到手就自動暫停。
 7. M4 延後：Developer ID、公證、dmg、Sparkle。
-8. 五指捏合（⌘M）：實機試用通過；握拳的指尖高度與拇指距離各自都有接近門檻的時候（見 `GatherDetector`）。還要：既有錄影（在主 checkout 的 `recordings/`）重播 `otherRecordingsDoNotMinimize` 確認 0 誤觸；日常使用時用動作紀錄看 `minimize` 有沒有誤觸。
+8. 敲兩下掌托：
+   - 錄第三份 `knock` 當驗證，加進 `KnockReplay`：前兩份都調過參數。
+   - 量停用時（鏡頭關閉）的 CPU：選單上的 Mirage CPU 就能看。
+   - 桌子用力敲兩下會觸發，左右也分不出來；兩個方向不同（第一份左側幾乎只有 z 軸，右側以 y 軸為主）。誤觸多的話，再評估用 gyro（usage 9）分辨。
+   - 力道 0.04 g 以下沒有錄影驗證。
+9. 五指捏合（⌘M）：實機試用通過；握拳的指尖高度與拇指距離各自都有接近門檻的時候（見 `GatherDetector`）。還要：既有錄影（在主 checkout 的 `recordings/`）重播 `otherRecordingsDoNotMinimize` 確認 0 誤觸；日常使用時用動作紀錄看 `minimize` 有沒有誤觸。
