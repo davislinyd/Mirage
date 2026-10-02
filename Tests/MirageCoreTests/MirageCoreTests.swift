@@ -33,6 +33,16 @@ private func makeHand(
     return Hand(chirality: .right, joints: joints)
 }
 
+/// 張手後五指尖收攏到 (0.5, 0.49) 附近的手。
+private func makeGatheredHand() -> Hand {
+    var hand = makeHand()
+    for (joint, x) in [(Joint.thumbTip, 0.51), (.indexTip, 0.505), (.middleTip, 0.5), (.ringTip, 0.495), (.littleTip, 0.49)] {
+        hand.joints[joint.rawValue].x = x
+        hand.joints[joint.rawValue].y = 0.49
+    }
+    return hand
+}
+
 @Suite struct OneEuroFilterTests {
     @Test func firstSamplePassesThrough() {
         var filter = OneEuroFilter()
@@ -113,6 +123,17 @@ private func makeHand(
         #expect(HandGeometry(hand: twoFingers, width: 1280, height: 720).isPointing(palmWidth: 153.6, fingers: 2) == true)
         #expect(pointing(twoFingers) == false)
     }
+
+    @Test func measuresGatheredFingertips() throws {
+        func measure(_ hand: Hand) throws -> (spread: Double, rise: Double) {
+            let geometry = HandGeometry(hand: hand, width: 1000, height: 1000)
+            return (try #require(geometry.tipSpread), try #require(geometry.tipRise))
+        }
+        #expect(try measure(makeHand()).spread > 0.8)
+        let gathered = try measure(makeGatheredHand())
+        #expect(gathered.spread < 0.2 && gathered.rise > 1)
+        #expect(try measure(makeHand(curled: true)).rise < 0)
+    }
 }
 
 @Suite struct DetectorTests {
@@ -168,6 +189,45 @@ private func makeHand(
     @Test func wakeToleratesTransitionPoses() {
         #expect(wakes([(.open, 0.5), (.other, 0.1), (.fist, 0.5)]) == [27])
         #expect(wakes([(.open, 0.5), (.other, 0.4), (.fist, 0.5)]) == [])
+    }
+
+    private typealias Gesture = (pose: HandPose?, spread: Double?, rise: Double?, thumb: Double?)
+    private let open: Gesture = (.open, 1.0, 1.0, 1.5)
+    private let gathered: Gesture = (.open, 0.1, 0.5, 0.1)
+    /// 照平常速度捏合：指尖降到指根高度，`pose` 判成握拳。
+    private let loweredGather: Gesture = (.fist, 0.4, -0.1, 0.1)
+    /// 握拳時指尖也收得很攏，但收到指根下方，拇指壓在食指上。
+    private let fist: Gesture = (.fist, 0.4, -0.4, 0.4)
+    private let point: Gesture = (.other, 0.9, 0.3, 1.0)
+
+    /// 以 30 fps 依序送入各段量測，回傳觸發五指捏合的幀序號。
+    private func gathers(_ segments: [(gesture: Gesture, seconds: Double)]) -> [Int] {
+        var detector = GatherDetector()
+        var fired: [Int] = []
+        var frame = 0
+        for segment in segments {
+            for _ in 0..<Int((segment.seconds * 30).rounded()) {
+                let g = segment.gesture
+                if detector.update(pose: g.pose, spread: g.spread, rise: g.rise, thumb: g.thumb, at: Double(frame) / 30) {
+                    fired.append(frame)
+                }
+                frame += 1
+            }
+        }
+        return fired
+    }
+
+    @Test func gatherRequiresHeldOpenHandFirst() {
+        #expect(gathers([(open, 0.5), (gathered, 1)]) == [17])
+        #expect(gathers([(open, 0.5), (gathered, 0.5), (open, 0.5), (gathered, 0.5)]) == [17, 47])
+        #expect(gathers([(open, 0.1), (gathered, 0.5)]) == [])
+        #expect(gathers([(point, 0.5), (gathered, 0.5)]) == [])
+        #expect(gathers([(open, 0.5), (point, 0.8), (gathered, 0.5)]) == [])
+        #expect(gathers([(open, 0.5), (loweredGather, 1)]) == [17])
+    }
+
+    @Test func fistIsNotGather() {
+        #expect(gathers([(open, 0.5), (fist, 1)]) == [])
     }
 }
 
@@ -362,6 +422,12 @@ private func makeHand(
         let output = try #require(run([(pointing(0.5, 0.5), 3)]))
         #expect(output.state == .idle)
         #expect(output.cursor == nil)
+    }
+
+    @Test func gatherWhileActiveMinimizes() {
+        let frames = outputs(woken((pointing(0.5, 0.5), 1), (makeHand(), 0.5), (makeGatheredHand(), 0.5)))
+        #expect(frames.filter(\.minimize).count == 1)
+        #expect(outputs([(makeHand(), 0.5), (makeGatheredHand(), 0.5)]).allSatisfy { !$0.minimize })
     }
 
     @Test func handFarFromCalibratedSizeCannotWake() throws {

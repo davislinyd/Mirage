@@ -13,6 +13,7 @@
   - 縮放：扳機按住 0.5 秒後，手往上放大、往下縮小，送 ⌘= / ⌘−。
   - 捲動（甩動）：兩指伸直後，指尖往上或往下快速一甩就往那個方向捲，速度看甩得多快，約 2 秒減速停下；慢慢收回不捲；收回中指就結束。
   - ESC：捲動中做一次扳機。
+  - ⌘M（縮到 Dock）：張手停一下後五指尖捏成一點；參數來自三份 `gather`，第二次實機試用很容易觸發、握拳沒有誤觸。
 - 其他功能：
   - 操作者鎖定：只跟著喚醒的那隻手。
   - HUD：控制中在主螢幕右上角顯示目前模式。
@@ -31,6 +32,7 @@
   - `TapDetector`、`TapClicker`（左鍵與拖曳）
   - `TriggerDetector`（右鍵、ESC、縮放）
   - `Scroller`
+  - `GatherDetector`（五指捏合 → ⌘M）
 - `tools/mediapipe-spike/`：評估紀錄。虛擬環境與模型不進版控，重建方式見 README。
 
 ## 常用指令
@@ -38,7 +40,7 @@
 - `swift build`、`swift test`
 - `scripts/build-app.sh`：產生 `build/Mirage.app`。
 - `open build/Mirage.app`：舊版在執行時，要先從選單列結束 Mirage。
-- 錄影：`swift run -c release mirage-spike <m0|gestures|precision|controls|gaze|depth|swipe>`，存到 `recordings/`。
+- 錄影：`swift run -c release mirage-spike <m0|gestures|precision|controls|gaze|depth|swipe|gather>`，存到 `recordings/`。
   - 錄影前先結束 Mirage，否則相機被占用。
   - 錄影時不要同時編譯，否則會掉幀。
 - 動作紀錄：`/usr/bin/log stream --predicate 'subsystem == "io.github.davislinyd.Mirage"' --level info --style compact`
@@ -68,3 +70,4 @@
    - 換方向要等上一次甩動開始後 1.2 秒；比預備動作（1.07 秒）只晚 0.13 秒。
    - 往上滑得太慢、沒算成一甩時，它的回程若快（約 6 掌寬/秒），仍可能被當成往下甩。
    - 捲動中握拳再伸直：握拳就是往下甩，伸直得快也會往上捲。
+8. 五指捏合（⌘M）：實機試用通過；握拳的指尖高度與拇指距離各自都有接近門檻的時候（見 `GatherDetector`）。還要：既有錄影（在主 checkout 的 `recordings/`）重播 `otherRecordingsDoNotMinimize` 確認 0 誤觸；日常使用時用動作紀錄看 `minimize` 有沒有誤觸。

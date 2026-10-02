@@ -233,6 +233,10 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
                 Self.log.notice("escape")
                 pressEscape()
             }
+            if output.minimize {
+                Self.log.notice("minimize")
+                pressMinimize()
+            }
             if let zoom = output.zoom {
                 Self.log.notice("zoom \(zoom)")
                 press(zoom: zoom)
@@ -266,6 +270,15 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private func pressEscape() {
         for down in [true, false] {
             CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_Escape), keyDown: down)?.post(tap: .cghidEventTap)
+        }
+    }
+
+    /// ⌘M：把目前視窗縮到 Dock。
+    private func pressMinimize() {
+        for down in [true, false] {
+            let event = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_ANSI_M), keyDown: down)
+            event?.flags = .maskCommand
+            event?.post(tap: .cghidEventTap)
         }
     }
 

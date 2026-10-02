@@ -63,7 +63,7 @@ final class HUD {
 
     static func describe(_ mode: ControlMode) -> (symbol: String, text: String) {
         switch mode {
-        case .pointing: ("hand.point.up.left.fill", "指向：按鍵點擊・扳機右鍵・按住扳機縮放")
+        case .pointing: ("hand.point.up.left.fill", "指向：按鍵點擊・扳機右鍵・按住扳機縮放・張手捏合縮到 Dock")
         case .pressing: ("hand.tap.fill", "按住：移動手拖曳，伸直放開")
         case .scrolling(.still): ("arrow.up.and.down", scrolling)
         case .scrolling(.up): ("arrow.up", scrolling)

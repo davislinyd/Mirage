@@ -88,6 +88,8 @@ public struct CursorController: Sendable {
         public var rightClick = false
         /// 按一下 ESC：兩指捲動時的扳機。
         public var escape = false
+        /// 按一下 ⌘M（縮到 Dock）：張手後五指尖捏成一點。
+        public var minimize = false
         /// 捲動中（游標停住）時為目前內容移動的方向，否則為 nil。
         public var scrolling: Scroller.Direction?
         /// 食指尖比指根高出幾個掌寬，供動作紀錄查捲動。
@@ -146,6 +148,8 @@ public struct CursorController: Sendable {
     private var thumb: (t: Double, cursor: Vec2?, anchor: Double?)?
     /// 兩指捲動時的扳機 = ESC。
     private var escapeTrigger = TriggerDetector()
+    /// 五指捏合 = ⌘M。
+    private var gather = GatherDetector()
     /// 捲動中最近 `TapClicker.speedWindow` 秒的手掌中心，量 ESC 的手掌速度：捲動時 `clicker` 每幀重置，量不到。
     private var scrollPalms: [(t: Double, point: Vec2)] = []
     /// 上一幀輸出的游標。
@@ -214,8 +218,14 @@ public struct CursorController: Sendable {
             scroller = Scroller()
             held = nil
             thumb = nil
+            gather = GatherDetector()
             return Output(state: state, cursor: nil)
         }
+        let thumbGap = geometry.flatMap { g in g.distance(.thumbTip, .middleTip).flatMap { d in g.palmWidth.map { d / $0 } } }
+        let minimize = gather.update(
+            pose: sized ? geometry?.pose : nil, spread: sized ? geometry?.tipSpread : nil, rise: sized ? geometry?.tipRise : nil,
+            thumb: sized ? thumbGap : nil, at: t
+        )
         // 食指尖比指根高出幾個掌寬：扳機與按鍵用來確認食指伸直，整隻手移動時不變。
         var rise: Double?
         if let tip, let palm, let knuckle {
@@ -249,7 +259,7 @@ public struct CursorController: Sendable {
             let escape = triggered && sized && (palmSpeed ?? .infinity) < triggerStillSpeed
             if triggered, !escape { escapeTrigger = TriggerDetector() }
             return Output(
-                state: state, cursor: held, scroll: scroll, escape: escape, scrolling: scroller.direction, rise: rise
+                state: state, cursor: held, scroll: scroll, escape: escape, minimize: minimize, scrolling: scroller.direction, rise: rise
             )
         }
         escapeTrigger = TriggerDetector()
@@ -306,8 +316,8 @@ public struct CursorController: Sendable {
         lastCursor = shown
         if pointing, let shown { pointed = (shown, t) }
         return Output(
-            state: state, cursor: shown, button: click.button, scroll: scroll, rightClick: rightClick, zoom: zoom, zooming: zooming,
-            pressed: clicker.isPressed
+            state: state, cursor: shown, button: click.button, scroll: scroll, rightClick: rightClick, minimize: minimize, zoom: zoom,
+            zooming: zooming, pressed: clicker.isPressed
         )
     }
 
