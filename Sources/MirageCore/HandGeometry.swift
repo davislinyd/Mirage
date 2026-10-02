@@ -64,6 +64,27 @@ public struct HandGeometry: Sendable {
         return gap / palm
     }
 
+    /// 五個指尖（含拇指）的位置（像素）與中心；任一指尖量不到為 nil。
+    private var tips: (points: [Vec2], center: Vec2)? {
+        let points = [Joint.thumbTip, .indexTip, .middleTip, .ringTip, .littleTip].compactMap { pixel($0) }
+        guard points.count == 5 else { return nil }
+        return (points, Vec2(x: points.reduce(0) { $0 + $1.x } / 5, y: points.reduce(0) { $0 + $1.y } / 5))
+    }
+
+    /// 五個指尖到它們中心的最大距離 ÷ 掌寬：五指尖捏成一點時小。
+    public var tipSpread: Double? {
+        guard let tips, let palm = palmWidth, palm > 0, let far = tips.points.map({ $0.distance(to: tips.center) }).max() else { return nil }
+        return far / palm
+    }
+
+    /// 四指（不含拇指）指尖比各自指根平均高出幾個掌寬：握拳時指尖收到指根下方。
+    public var tipRise: Double? {
+        let fingers: [(tip: Joint, mcp: Joint)] = [(.indexTip, .indexMCP), (.middleTip, .middleMCP), (.ringTip, .ringMCP), (.littleTip, .littleMCP)]
+        let rises = fingers.compactMap { f in normalized(f.tip).flatMap { t in normalized(f.mcp).map { (t.y - $0.y) * height } } }
+        guard rises.count == 4, let palm = palmWidth, palm > 0 else { return nil }
+        return rises.reduce(0, +) / 4 / palm
+    }
+
     /// 食指彎曲（指尖比 PIP 關節離手腕近）。握拳或拿杯子時拇指也會碰到食指，但食指是彎的。
     public var indexCurled: Bool? {
         guard let tip = distance(.indexTip, .wrist), let pip = distance(.indexPIP, .wrist) else { return nil }

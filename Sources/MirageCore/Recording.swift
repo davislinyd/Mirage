@@ -7,6 +7,7 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
     case gazeCalibrate, gazeCheck, gazeHead, faceLatency
     case push
     case swipeUp, swipeDown, swipeHold
+    case gather
 
     /// 準備階段不計時：手連續入鏡 1 秒後才開始倒數，避免手還沒就定位就開始量測。
     public var duration: Double {
@@ -18,7 +19,7 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
         case .sweep: 8
         case .moveAndTap, .moveAndTrigger, .gazeCalibrate, .gazeCheck, .gazeHead, .swipeHold: 18
         case .triggerHold, .halfBend, .fist, .tapHold: 12
-        case .daily, .trigger, .twoFingerTrigger, .reverseBend, .tap, .threeFingerBend, .push, .swipeUp, .swipeDown: 15
+        case .daily, .trigger, .twoFingerTrigger, .reverseBend, .tap, .threeFingerBend, .push, .swipeUp, .swipeDown, .gather: 15
         case .faceLatency: 20
         }
     }
@@ -54,6 +55,7 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
         case .swipeUp: "兩指往上滑"
         case .swipeDown: "兩指往下滑"
         case .swipeHold: "兩指慢慢移動"
+        case .gather: "五指捏合"
         }
     }
 
@@ -88,6 +90,7 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
         case .swipeUp: "食指與中指伸直，指尖往上快速甩一下，再慢慢收回原處，10 下"
         case .swipeDown: "食指與中指伸直，指尖往下快速甩一下，再慢慢收回原處，10 下"
         case .swipeHold: "兩指伸直，手慢慢往上移約一個掌寬、停約 1 秒再慢慢回來；再往下同樣做。上下各 3 次（不會捲動）"
+        case .gather: "手放在平常控制的高度，從食指指向開始：張開手掌 → 五指尖捏成一點 → 回到指向，照平常的速度，10 次"
         }
     }
 }
@@ -121,7 +124,9 @@ public struct Script: Sendable {
     public static let swipe = Script(
         name: "swipe", phases: [.warmup, .move, .swipeUp, .swipeDown, .swipeHold, .twoFingerTrigger, .daily]
     )
-    public static let all = [m0, gestures, precision, controls, gaze, depth, swipe]
+    /// 五指捏合（⌘M）：對照張手 → 握拳（喚醒）、兩指扳機與日常。
+    public static let gather = Script(name: "gather", phases: [.warmup, .move, .gather, .wake, .twoFingerTrigger, .daily])
+    public static let all = [m0, gestures, precision, controls, gaze, depth, swipe, gather]
 
     /// 需要偵測臉：準備階段改等臉入鏡。
     public var usesFace: Bool {

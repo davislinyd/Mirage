@@ -31,6 +31,12 @@ private enum Replay {
     /// 參與了調整：第一份定甩動的門檻，第二份找出往上甩之前的預備動作，把反方向的冷卻延長到 1.5 秒。第三份只用來驗證。
     static let swipe = ["swipe-2026-09-29T12-21-05Z", "swipe-2026-09-29T12-52-10Z", "swipe-2026-09-29T13-01-29Z"]
     static let swipeAvailable = swipe.allSatisfy(exists)
+    /// `mirage-spike gather`：五指捏合、張手 → 握拳、兩指扳機、日常；值為應觸發的次數。前兩份刻意張手停一下再捏合（5、
+    /// 8 下），第三份照平常的速度（13 下），三份都參與了調整。第一份漏掉的一下拇指沒碰到中指（0.45 掌寬）。
+    static let gather = ["gather-2026-10-02T14-08-51Z": 4, "gather-2026-10-02T14-13-07Z": 8, "gather-2026-10-02T14-24-20Z": 13]
+    static let gatherAvailable = gather.keys.allSatisfy(exists)
+    /// 沒有五指捏合的錄影：每個階段都不該送 ⌘M。
+    static let withoutGather = recordings + [scrolling] + gestures + precision + controls + controlsWithoutTaps + controlsWithTriggers + swipe
 
     static func exists(_ name: String) -> Bool {
         FileManager.default.fileExists(atPath: directory.appendingPathComponent("\(name).jsonl").path)
@@ -272,5 +278,23 @@ private enum Replay {
         }
         let trigger = try Replay.active(frames, phase: .twoFingerTrigger)
         #expect(trigger.filter(\.escape).count >= 8 && trigger.allSatisfy { $0.scroll == nil })
+    }
+}
+
+@Suite struct GatherReplayTests {
+    @Test(.enabled(if: Replay.gatherAvailable), arguments: Replay.gather.keys.sorted()) func gatherMinimizesAndFistDoesNot(name: String) throws {
+        let frames = try Replay.load(name)
+        let count = try Replay.active(frames, phase: .gather).filter(\.minimize).count
+        #expect(count == Replay.gather[name], "\(name) \(count)")
+        for phase in [Phase.move, .wake, .twoFingerTrigger, .daily] {
+            #expect(try Replay.active(frames, phase: phase).allSatisfy { !$0.minimize }, "\(phase)")
+        }
+    }
+
+    @Test(arguments: Replay.withoutGather.filter(Replay.exists)) func otherRecordingsDoNotMinimize(name: String) throws {
+        let frames = try Replay.load(name)
+        for phase in Set(frames.map(\.phase)).subtracting([.warmup]) {
+            #expect(try Replay.active(frames, phase: phase).allSatisfy { !$0.minimize }, "\(name) \(phase)")
+        }
     }
 }
