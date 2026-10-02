@@ -239,7 +239,7 @@ public struct CursorController: Sendable {
         let thumbGap = geometry.flatMap { g in g.distance(.thumbTip, .middleTip).flatMap { d in g.palmWidth.map { d / $0 } } }
         let minimize = gather.update(
             pose: sized ? geometry?.pose : nil, spread: sized ? geometry?.tipSpread : nil, rise: sized ? geometry?.tipRise : nil,
-            thumb: sized ? thumbGap : nil, at: t
+            thumb: sized ? thumbGap : nil, thumbLift: sized ? geometry?.thumbLift : nil, at: t
         )
         // 食指尖比指根高出幾個掌寬：扳機與按鍵用來確認食指伸直，整隻手移動時不變。
         var rise: Double?

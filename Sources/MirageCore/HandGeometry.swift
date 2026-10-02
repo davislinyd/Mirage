@@ -85,6 +85,12 @@ public struct HandGeometry: Sendable {
         return rises.reduce(0, +) / 4 / palm
     }
 
+    /// 拇指尖比拇指 IP 關節高出幾個掌寬：捏合時拇指往上碰其他指尖，握拳時拇指橫壓在手指上。
+    public var thumbLift: Double? {
+        guard let tip = normalized(.thumbTip), let ip = normalized(.thumbIP), let palm = palmWidth, palm > 0 else { return nil }
+        return (tip.y - ip.y) * height / palm
+    }
+
     /// 食指彎曲（指尖比 PIP 關節離手腕近）。握拳或拿杯子時拇指也會碰到食指，但食指是彎的。
     public var indexCurled: Bool? {
         guard let tip = distance(.indexTip, .wrist), let pip = distance(.indexPIP, .wrist) else { return nil }

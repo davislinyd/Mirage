@@ -140,6 +140,7 @@ private func makeGatheredHand() -> Hand {
         #expect(try measure(makeHand()).spread > 0.8)
         let gathered = try measure(makeGatheredHand())
         #expect(gathered.spread < 0.2 && gathered.rise > 1)
+        #expect(try #require(HandGeometry(hand: makeGatheredHand(), width: 1000, height: 1000).thumbLift) > 1)
         #expect(try measure(makeHand(curled: true)).rise < 0)
     }
 }
@@ -199,14 +200,16 @@ private func makeGatheredHand() -> Hand {
         #expect(wakes([(.open, 0.5), (.other, 0.4), (.fist, 0.5)]) == [])
     }
 
-    private typealias Gesture = (pose: HandPose?, spread: Double?, rise: Double?, thumb: Double?)
-    private let open: Gesture = (.open, 1.0, 1.0, 1.5)
-    private let gathered: Gesture = (.open, 0.1, 0.5, 0.1)
+    private typealias Gesture = (pose: HandPose?, spread: Double?, rise: Double?, thumb: Double?, lift: Double?)
+    private let open: Gesture = (.open, 1.0, 1.0, 1.5, 0.5)
+    private let gathered: Gesture = (.open, 0.1, 0.5, 0.1, 0.4)
     /// 照平常速度捏合：指尖降到指根高度，`pose` 判成握拳。
-    private let loweredGather: Gesture = (.fist, 0.4, -0.1, 0.1)
+    private let loweredGather: Gesture = (.fist, 0.4, -0.1, 0.1, 0.2)
     /// 握拳時指尖也收得很攏，但收到指根下方，拇指壓在食指上。
-    private let fist: Gesture = (.fist, 0.4, -0.4, 0.4)
-    private let point: Gesture = (.other, 0.9, 0.3, 1.0)
+    private let fist: Gesture = (.fist, 0.4, -0.4, 0.4, 0.0)
+    /// 手舉高時的握拳：指尖高度與拇指位置都像捏合，只有拇指是橫的。
+    private let flatThumbFist: Gesture = (.fist, 0.4, -0.2, 0.2, 0.0)
+    private let point: Gesture = (.other, 0.9, 0.3, 1.0, 0.5)
 
     /// 以 30 fps 依序送入各段量測，回傳觸發五指捏合的幀序號。
     private func gathers(_ segments: [(gesture: Gesture, seconds: Double)]) -> [Int] {
@@ -216,7 +219,7 @@ private func makeGatheredHand() -> Hand {
         for segment in segments {
             for _ in 0..<Int((segment.seconds * 30).rounded()) {
                 let g = segment.gesture
-                if detector.update(pose: g.pose, spread: g.spread, rise: g.rise, thumb: g.thumb, at: Double(frame) / 30) {
+                if detector.update(pose: g.pose, spread: g.spread, rise: g.rise, thumb: g.thumb, thumbLift: g.lift, at: Double(frame) / 30) {
                     fired.append(frame)
                 }
                 frame += 1
@@ -236,6 +239,7 @@ private func makeGatheredHand() -> Hand {
 
     @Test func fistIsNotGather() {
         #expect(gathers([(open, 0.5), (fist, 1)]) == [])
+        #expect(gathers([(open, 0.5), (flatThumbFist, 1)]) == [])
     }
 }
 
