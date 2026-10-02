@@ -69,6 +69,7 @@ final class HUD {
         case .scrolling(.up): ("arrow.up", scrolling)
         case .scrolling(.down): ("arrow.down", scrolling)
         case .zooming: ("plus.magnifyingglass", "縮放：手往上放大、往下縮小")
+        case .swiping: ("hand.draw.fill", "三指揮動：往左右換桌面，往上 Mission Control")
         }
     }
 

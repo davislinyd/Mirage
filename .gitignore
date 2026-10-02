@@ -8,3 +8,8 @@ tools/mediapipe-spike/.venv/
 tools/mediapipe-spike/*.task
 tools/mediapipe-spike/__pycache__/
 tools/mediapipe-spike/list-cameras
+tools/gaze-spike/.venv/
+tools/gaze-spike/*.task
+tools/gaze-spike/__pycache__/
+tools/gaze-spike/.venv-cnn/
+tools/gaze-spike/.cache/

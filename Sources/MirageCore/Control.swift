@@ -74,6 +74,8 @@ public enum ControlMode: Sendable, Equatable {
     case scrolling(Scroller.Direction)
     /// 扳機按住：手往上放大、往下縮小。
     case zooming
+    /// 三指：手往左、往右揮換桌面，往上揮開 Mission Control。
+    case swiping
 }
 
 /// 主要手 → 啟用狀態 → 游標位置（螢幕 pt，原點左下）、左右鍵與捲動。只有 Active 時輸出。
@@ -100,11 +102,16 @@ public struct CursorController: Sendable {
         public var zooming = false
         /// 左鍵按著（按鍵按住或拖曳中）。
         public var pressed = false
+        /// 這一幀要換到的桌面：手往右揮去左邊（⌃←）、往左揮去右邊（⌃→）、往上揮開 Mission Control（⌃↑）。
+        public var desktop: DesktopSwiper.Direction?
+        /// 三指模式：游標停在原處，不點擊。
+        public var swiping = false
 
         /// HUD 顯示的操作模式；不在控制中時為 nil。
         public var mode: ControlMode? {
             guard state == .active else { return nil }
             if zooming { return .zooming }
+            if swiping { return .swiping }
             if let scrolling { return .scrolling(scrolling) }
             return pressed ? .pressing : .pointing
         }
@@ -116,6 +123,9 @@ public struct CursorController: Sendable {
     /// 掌寬須在校準值的此範圍內才算數。側手、離太遠或太近的手，以及背後旁人的手，量到的掌寬都會明顯偏離。
     /// 手放低時，校準畫圈時手掌斜著、量到的較小，做手勢時正對鏡頭可到 1.44 倍，所以上限放寬到 1.6。
     public var palmRange = 0.6...1.6
+    /// 三指揮動時，掌寬須在校準值的此範圍內才算數。揮動時手會轉，掌寬縮得比 `palmRange` 的下限還小：錄影中三指階段往右揮
+    /// 的中位數是校準值的 0.76、往左揮 0.61，最小到 0.29。已經鎖定操作者的手，旁人的手不會取代它（`OperatorLock`）。
+    public var swipePalmRange = 0.3...1.6
     /// 量不到掌寬時，沿用此秒數內最近一次量到的值（同 `GestureProbe.palmHold`）。
     public var palmHold = 0.2
     /// 手消失超過此秒數後重置濾波器，避免游標從舊位置慢慢滑過去。
@@ -140,6 +150,7 @@ public struct CursorController: Sendable {
     private var wake = WakeDetector()
     private var clicker = TapClicker()
     private var scroller = Scroller()
+    private var swiper = DesktopSwiper()
     /// 只伸食指時的扳機 = 右鍵。
     private var rightTrigger = TriggerDetector()
     /// 右鍵扳機期間、最近 `TriggerDetector.window` 秒內的拇指距離與游標，點在拇指開始動之前的位置。
@@ -191,6 +202,9 @@ public struct CursorController: Sendable {
         let pointing = inside && geometry?.isPointing(palmWidth: palm ?? 0) == true
         let knuckle = sized ? geometry?.normalized(.indexMCP) : nil
         let twoFingers = inside && !clicker.isPressed && geometry?.isPointing(palmWidth: palm ?? 0, fingers: 2) == true
+        let swipeSized = palm.map { swipePalmRange.contains($0 / calibration.palmWidth) } ?? false
+        let swipeInside = swipeSized && geometry?.normalized(.indexPIP).map { isInside($0) } == true
+        let threeFingers = swipeInside && !clicker.isPressed && geometry?.isPointing(palmWidth: palm ?? 0, fingers: 3) == true
         if twoFingers, let point, let knuckle { reach = Vec2(x: point.x - knuckle.x, y: point.y - knuckle.y) }
         // 捲動中彎手指時 PIP 會離開操作範圍，但手沒有離開：改用食指根部加上手指伸直時的 PIP 位移判斷。
         let placed = scroller.isScrolling ? knuckle.flatMap { k in reach.map { Vec2(x: k.x + $0.x, y: k.y + $0.y) } } : point
@@ -216,6 +230,7 @@ public struct CursorController: Sendable {
         guard state == .active else {
             clicker = TapClicker()
             scroller = Scroller()
+            swiper = DesktopSwiper()
             held = nil
             thumb = nil
             gather = GatherDetector()
@@ -231,6 +246,24 @@ public struct CursorController: Sendable {
         if let tip, let palm, let knuckle {
             rise = (tip.y - knuckle.y) * Double(height) / palm
         }
+        // 除以固定的校準掌寬：每幀量到的掌寬有約 5% 的雜訊，拿它換算位置，速度會多出約 0.7 掌寬／秒。
+        let scale = calibration.palmWidth
+        let palmPoint = sized ? geometry?.palmCenter.map { Vec2(x: $0.x / scale, y: $0.y / scale) } : nil
+        // 三指揮動（換桌面、Mission Control）：手掌中心的位置，影像未鏡像，x 取負才是往使用者的右邊為正。
+        let swipePoint = swipeSized ? geometry?.palmCenter.map { Vec2(x: -$0.x / scale, y: $0.y / scale) } : nil
+        let desktop = swiper.update(threeFingers: threeFingers, position: swipePoint, at: t)
+        if swiper.isActive {
+            // 游標停住，不點擊；兩指捲動中直接伸出無名指時，捲動也結束，否則會拿指尖的高度誤捲。
+            scroller = Scroller()
+            clicker = TapClicker()
+            rightTrigger = TriggerDetector()
+            escapeTrigger = TriggerDetector()
+            triggerCursors = []
+            scrollPalms = []
+            thumb = nil
+            if held == nil { held = pointed.flatMap { t - $0.t <= pointMemory ? $0.cursor : nil } ?? lastCursor }
+            return Output(state: state, cursor: held, desktop: desktop, swiping: true)
+        }
         // 食指尖的高度（校準掌寬）：往上、往下甩就捲動，彎手指與抬手都算。
         let scroll = scroller.update(
             twoFingers: twoFingers, pointing: pointing, level: tip.map { $0.y * Double(height) / calibration.palmWidth }, at: t
@@ -239,9 +272,6 @@ public struct CursorController: Sendable {
         var distance: Double?
         if sized, let palm, let gap = geometry?.distance(.thumbTip, .indexPIP) { distance = gap / palm }
         let posed = [1, 2].contains { geometry?.isPointing(palmWidth: palm ?? 0, fingers: $0) == true }
-        // 除以固定的校準掌寬：每幀量到的掌寬有約 5% 的雜訊，拿它換算位置，速度會多出約 0.7 掌寬／秒。
-        let scale = calibration.palmWidth
-        let palmPoint = sized ? geometry?.palmCenter.map { Vec2(x: $0.x / scale, y: $0.y / scale) } : nil
         if scroller.isScrolling {
             clicker = TapClicker()
             rightTrigger = TriggerDetector()

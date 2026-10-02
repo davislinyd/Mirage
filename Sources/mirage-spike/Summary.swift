@@ -55,11 +55,16 @@ enum Summary {
         return lines.joined(separator: "\n")
     }
 
-    /// 把每幀紀錄（JSONL）與摘要存到 `recordings/`，檔名以腳本名稱開頭，回傳 JSONL 路徑。
-    static func save(frames: [FrameRecord], summary: String, script: Script) throws -> URL {
-        let directory = URL.currentDirectory().appending(path: "recordings")
+    static let directory = URL.currentDirectory().appending(path: "recordings")
+
+    static func stamp() -> String {
+        ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+    }
+
+    /// 把每幀紀錄（JSONL）與摘要存到 `recordings/`，檔名以腳本名稱開頭，回傳 JSONL 路徑。`stamp` 預設為現在，
+    /// 有存影像時要與影像資料夾同名。
+    static func save(frames: [FrameRecord], summary: String, script: Script, stamp: String = stamp()) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
         let encoder = JSONEncoder()
         var data = Data()
         for frame in frames {

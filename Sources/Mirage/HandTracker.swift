@@ -77,6 +77,7 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private var pressed = false
     /// 捲動平均分到約 120 Hz 送出（`ScrollSmoother`），沒有要送的時候停掉。
     private var smoother = ScrollSmoother()
+    private var throttle = FrameThrottle()
     private var scrollTimer: DispatchSourceTimer?
     private var lastScrollTick = 0.0
 
@@ -176,12 +177,21 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard running, let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        let pending = Pending(pixelBuffer: pixelBuffer, t: CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds)
+        let t = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+        // 待命（等喚醒手勢）時降到約 10 fps，省下的是手部偵測；相機本身仍是原本的幀率。
+        guard throttle.shouldProcess(at: t, idle: waitingForWake) else { return }
+        let pending = Pending(pixelBuffer: pixelBuffer, t: t)
         if busy {
             waiting = pending
         } else {
             detect(pending)
         }
+    }
+
+    /// 控制中、還沒喚醒：只在等喚醒手勢。校準時每幀都要處理。
+    private var waitingForWake: Bool {
+        if case .controlling = mode { return state == .idle }
+        return false
     }
 
     private func detect(_ pending: Pending) {
@@ -241,6 +251,10 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
                 Self.log.notice("zoom \(zoom)")
                 press(zoom: zoom)
             }
+            if let desktop = output.desktop {
+                Self.log.notice("desktop \(String(describing: desktop), privacy: .public)")
+                press(desktop: desktop)
+            }
             if output.scrolling != nil, let rise = output.rise { Self.log.info("rise \(rise, format: .fixed(precision: 2))") }
             if let scroll = output.scroll {
                 Self.log.notice("scroll \(scroll, format: .fixed(precision: 0))")
@@ -291,6 +305,28 @@ final class HandTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
                 event?.flags = .maskCommand
                 event?.post(tap: .cghidEventTap)
             }
+        }
+    }
+
+    /// 換桌面送 ⌃← 或 ⌃→，Mission Control 送 ⌃↑：系統設定 → 鍵盤 → 鍵盤快速鍵 → Mission Control 預設就是這三組。
+    /// 只在方向鍵事件上加 ⌃ 旗標，系統沒有反應（實機試過，手勢與事件都有送出）：改成同實體鍵盤，先送 Control 按下、
+    /// 方向鍵事件帶 fn 旗標（實體方向鍵都有）、最後送 Control 放開。
+    private func press(desktop: DesktopSwiper.Direction) {
+        let code = switch desktop {
+        case .left: kVK_LeftArrow
+        case .right: kVK_RightArrow
+        case .up: kVK_UpArrow
+        }
+        let events: [(key: Int, down: Bool, flags: CGEventFlags)] = [
+            (kVK_Control, true, .maskControl),
+            (code, true, [.maskControl, .maskSecondaryFn]),
+            (code, false, [.maskControl, .maskSecondaryFn]),
+            (kVK_Control, false, []),
+        ]
+        for (key, down, flags) in events {
+            let event = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(key), keyDown: down)
+            event?.flags = flags
+            event?.post(tap: .cghidEventTap)
         }
     }
 

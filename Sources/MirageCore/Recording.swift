@@ -7,6 +7,7 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
     case gazeCalibrate, gazeCheck, gazeHead, faceLatency
     case push
     case swipeUp, swipeDown, swipeHold
+    case desktopRight, desktopLeft, desktopUp, desktopDown, desktopHold
     case gather
 
     /// 準備階段不計時：手連續入鏡 1 秒後才開始倒數，避免手還沒就定位就開始量測。
@@ -17,9 +18,10 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
         case .still: 5
         case .move, .pinch, .wake, .hover, .precise: 10
         case .sweep: 8
-        case .moveAndTap, .moveAndTrigger, .gazeCalibrate, .gazeCheck, .gazeHead, .swipeHold: 18
+        case .moveAndTap, .moveAndTrigger, .gazeCalibrate, .gazeCheck, .gazeHead, .swipeHold, .desktopHold: 18
         case .triggerHold, .halfBend, .fist, .tapHold: 12
-        case .daily, .trigger, .twoFingerTrigger, .reverseBend, .tap, .threeFingerBend, .push, .swipeUp, .swipeDown, .gather: 15
+        case .daily, .trigger, .twoFingerTrigger, .reverseBend, .tap, .threeFingerBend, .push, .swipeUp, .swipeDown,
+             .desktopRight, .desktopLeft, .desktopUp, .desktopDown, .gather: 15
         case .faceLatency: 20
         }
     }
@@ -55,6 +57,11 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
         case .swipeUp: "兩指往上滑"
         case .swipeDown: "兩指往下滑"
         case .swipeHold: "兩指慢慢移動"
+        case .desktopRight: "三指往右揮"
+        case .desktopLeft: "三指往左揮"
+        case .desktopUp: "三指往上揮"
+        case .desktopDown: "三指往下揮"
+        case .desktopHold: "三指慢慢移動"
         case .gather: "五指捏合"
         }
     }
@@ -90,6 +97,11 @@ public enum Phase: String, CaseIterable, Codable, Sendable {
         case .swipeUp: "食指與中指伸直，指尖往上快速甩一下，再慢慢收回原處，10 下"
         case .swipeDown: "食指與中指伸直，指尖往下快速甩一下，再慢慢收回原處，10 下"
         case .swipeHold: "兩指伸直，手慢慢往上移約一個掌寬、停約 1 秒再慢慢回來；再往下同樣做。上下各 3 次（不會捲動）"
+        case .desktopRight: "食指、中指、無名指伸直，小指收起，手往右快速揮一下，再慢慢收回原處，10 下"
+        case .desktopLeft: "食指、中指、無名指伸直，小指收起，手往左快速揮一下，再慢慢收回原處，10 下"
+        case .desktopUp: "食指、中指、無名指伸直，小指收起，手往上快速揮一下，再慢慢放回原處，10 下"
+        case .desktopDown: "食指、中指、無名指伸直，小指收起，手往下快速揮一下，再慢慢收回原處，10 下（不會有動作）"
+        case .desktopHold: "三指伸直，手慢慢往右、往左、往上各移動約一個掌寬、停約 1 秒再慢慢回來，各 3 次（不會有動作）"
         case .gather: "手放在平常控制的高度，從食指指向開始：張開手掌 → 五指尖捏成一點 → 回到指向，照平常的速度，10 次"
         }
     }
@@ -124,9 +136,16 @@ public struct Script: Sendable {
     public static let swipe = Script(
         name: "swipe", phases: [.warmup, .move, .swipeUp, .swipeDown, .swipeHold, .twoFingerTrigger, .daily]
     )
+    /// 三指揮動換桌面與 Mission Control：往右、往左、往上、往下各揮 10 下再慢慢收回；對照慢慢移動、兩指甩動、兩指扳機與日常。
+    public static let desktop = Script(
+        name: "desktop",
+        phases: [
+            .warmup, .move, .desktopRight, .desktopLeft, .desktopUp, .desktopDown, .desktopHold, .swipeUp, .twoFingerTrigger, .daily,
+        ]
+    )
     /// 五指捏合（⌘M）：對照張手 → 握拳（喚醒）、兩指扳機與日常。
     public static let gather = Script(name: "gather", phases: [.warmup, .move, .gather, .wake, .twoFingerTrigger, .daily])
-    public static let all = [m0, gestures, precision, controls, gaze, depth, swipe, gather]
+    public static let all = [m0, gestures, precision, controls, gaze, depth, swipe, desktop, gather]
 
     /// 需要偵測臉：準備階段改等臉入鏡。
     public var usesFace: Bool {
@@ -182,10 +201,14 @@ public struct FrameRecord: Codable, Sendable {
     public var faceMs: Double?
     /// 注視階段要看的點（螢幕 pt，原點左下）；其他階段為 nil。
     public var target: Vec2?
+    /// 這一幀存下的影像（`gaze --frames`），路徑相對於與 JSONL 同名的資料夾；沒有存時為 nil。影像是相機原始方向
+    /// （未鏡像、未旋轉），與 `face` 等座標的座標系相同。
+    public var image: String?
 
     public init(
         t: Double, phase: Phase, width: Int, height: Int, latencyMs: Double, inferenceMs: Double, hands: [Hand],
-        config: String? = nil, deliveryMs: Double? = nil, face: Face? = nil, faceMs: Double? = nil, target: Vec2? = nil
+        config: String? = nil, deliveryMs: Double? = nil, face: Face? = nil, faceMs: Double? = nil, target: Vec2? = nil,
+        image: String? = nil
     ) {
         self.t = t
         self.phase = phase
@@ -199,6 +222,7 @@ public struct FrameRecord: Codable, Sendable {
         self.face = face
         self.faceMs = faceMs
         self.target = target
+        self.image = image
     }
 
     /// 主要操作手：優先右手，其次平均信心值最高者。

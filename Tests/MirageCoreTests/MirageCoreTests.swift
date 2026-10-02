@@ -82,6 +82,14 @@ private func makeGatheredHand() -> Hand {
         #expect(Script.m0.at(elapsed: Script.m0.totalDuration)?.phase == nil)
         #expect(Script.gestures.at(elapsed: 0)?.phase == .move)
     }
+
+    @Test func desktopScriptIsRegisteredAndRecordsEachDirection() {
+        #expect(Script.all.contains { $0.name == "desktop" })
+        #expect(Script.desktop.at(elapsed: 0)?.phase == .move)
+        for phase in [Phase.desktopRight, .desktopLeft, .desktopUp, .desktopDown, .desktopHold] {
+            #expect(Script.desktop.phases.contains(phase) && phase.duration > 0 && !phase.instruction.isEmpty)
+        }
+    }
 }
 
 @Suite struct HandGeometryTests {
@@ -386,8 +394,10 @@ private func makeGatheredHand() -> Hand {
 
     /// 食指指向、食指尖在 (`x`, `y`) 的手，游標跟著的 PIP 在指尖下方 0.1；`pressed` 為 true 時拇指壓在食指第二關節旁
     /// （扳機，距離約 0.21 掌寬，平常約 0.68），`tapped` 為 true 時指尖兩節往下彎約 35°（按鍵），`twoFingers` 為
-    /// true 時中指也伸直。
-    private func pointing(_ x: Double, _ y: Double, pressed: Bool = false, tapped: Bool = false, twoFingers: Bool = false) -> Hand {
+    /// true 時中指也伸直，`threeFingers` 為 true 時中指與無名指都伸直。
+    private func pointing(
+        _ x: Double, _ y: Double, pressed: Bool = false, tapped: Bool = false, twoFingers: Bool = false, threeFingers: Bool = false
+    ) -> Hand {
         var hand = makeHand(
             pointing: true, thumbTip: pressed ? Vec2(x: 0.565, y: 0.42) : Vec2(x: 0.62, y: 0.45), offset: Vec2(x: x - 0.54, y: y - 0.52)
         )
@@ -397,9 +407,13 @@ private func makeGatheredHand() -> Hand {
             hand.joints[Joint.indexTip.rawValue].x += 0.02
             hand.joints[Joint.indexTip.rawValue].y -= 0.03
         }
-        if twoFingers {
+        if twoFingers || threeFingers {
             hand.joints[Joint.middleDIP.rawValue].y += 0.09
             hand.joints[Joint.middleTip.rawValue].y += 0.19
+        }
+        if threeFingers {
+            hand.joints[Joint.ringDIP.rawValue].y += 0.09
+            hand.joints[Joint.ringTip.rawValue].y += 0.19
         }
         return hand
     }
@@ -598,6 +612,60 @@ private func makeGatheredHand() -> Hand {
         #expect(tap.contains { $0.mode == .pressing })
         let scroll = outputs(woken((pointing(0.5, 0.5), 1), (pointing(0.5, 0.5, twoFingers: true), 0.5)))
         #expect(scroll.last?.mode == .scrolling(.still))
+        #expect(CursorController.Output(state: .active, swiping: true).mode == .swiping)
+        let swipe = outputs(woken((pointing(0.5, 0.5), 1), (pointing(0.5, 0.5, threeFingers: true), 0.5)))
+        #expect(swipe.last?.mode == .swiping)
+    }
+
+    /// 影像未鏡像：手往使用者的右邊移動，影像中的 x 變小。每幀移 0.035（約 0.29 掌寬，每秒約 8.8 掌寬）。
+    private func sweep(from x: Double, _ y: Double, dx: Double, dy: Double, frames: Int, threeFingers: Bool = true) -> [Segment] {
+        (1...frames).map { i in
+            (pointing(x + dx * Double(i), y + dy * Double(i), twoFingers: !threeFingers, threeFingers: threeFingers), 1.0 / 30)
+        }
+    }
+
+    @Test func threeFingersSweepingSwitchesDesktopWhileCursorHolds() throws {
+        let ready = woken((pointing(0.5, 0.5), 1), (pointing(0.5, 0.5, threeFingers: true), 0.5))
+        // 往使用者的右揮 → ⌃←；往左揮 → ⌃→（隔 2 秒，過了換方向的等待）；往上揮 → ⌃↑（再隔 2 秒）。
+        let right = outputs(ready + sweep(from: 0.5, 0.5, dx: -0.035, dy: 0, frames: 4) + [(pointing(0.36, 0.5, threeFingers: true), 0.3)])
+        #expect(right.compactMap(\.desktop) == [.left])
+        let left = outputs(ready + sweep(from: 0.5, 0.5, dx: 0.035, dy: 0, frames: 4) + [(pointing(0.64, 0.5, threeFingers: true), 0.3)])
+        #expect(left.compactMap(\.desktop) == [.right])
+        let up = outputs(ready + sweep(from: 0.5, 0.5, dx: 0, dy: 0.05, frames: 4) + [(pointing(0.5, 0.7, threeFingers: true), 0.3)])
+        #expect(up.compactMap(\.desktop) == [.up])
+        // 三指模式中游標停在原處，不點擊、不捲動、不右鍵、不 ESC。
+        let swiping = right.filter(\.swiping)
+        let cursor = try #require(swiping.first?.cursor)
+        #expect(swiping.count > 10)
+        #expect(swiping.allSatisfy { $0.cursor == cursor && $0.button == nil && $0.scroll == nil && !$0.rightClick && !$0.escape })
+    }
+
+    @Test func twoFingerFlickDoesNotSwitchDesktop() {
+        // 兩指快速往左右、往上移動是甩動捲動，不換桌面。
+        let ready = woken((pointing(0.5, 0.5), 1), (pointing(0.5, 0.5, twoFingers: true), 0.5))
+        for (dx, dy) in [(-0.035, 0.0), (0.035, 0), (0, 0.05)] {
+            let frames = outputs(ready + sweep(from: 0.5, 0.5, dx: dx, dy: dy, frames: 4, threeFingers: false))
+            #expect(frames.allSatisfy { $0.desktop == nil && !$0.swiping })
+        }
+    }
+
+    @Test func slowThreeFingerMovementDoesNotSwitchDesktop() {
+        // 每幀移 0.01（每秒約 2.5 掌寬）。
+        let ready = woken((pointing(0.5, 0.5), 1), (pointing(0.5, 0.5, threeFingers: true), 0.5))
+        let frames = outputs(ready + sweep(from: 0.5, 0.5, dx: -0.01, dy: 0, frames: 12))
+        #expect(frames.allSatisfy { $0.desktop == nil })
+        #expect(frames.last?.swiping == true)
+    }
+
+    @Test func raisingRingFingerWhileScrollingEndsScrolling() throws {
+        // 兩指捲動中伸出無名指：進入三指模式，捲動結束、游標停住。
+        let frames = outputs(woken(
+            (pointing(0.5, 0.6), 1), (pointing(0.5, 0.6, twoFingers: true), 0.3), (bent(0.5, 0.6), 0.3),
+            (pointing(0.5, 0.6, threeFingers: true), 0.6)
+        ))
+        #expect(frames.contains { $0.scrolling != nil })
+        let last = try #require(frames.last)
+        #expect(last.swiping && last.scrolling == nil && last.scroll == nil && last.state == .active)
     }
 
     @Test func losingHandDeactivates() throws {
@@ -896,6 +964,154 @@ private func makeGatheredHand() -> Hand {
     }
 }
 
+@Suite struct DesktopSwiperTests {
+    private typealias Segment = (three: Bool, seconds: Double, vx: Double, vy: Double)
+
+    /// 以 30 fps 依序送入各段：是否三指、秒數、手掌中心的速度（掌寬/秒，x 往使用者的右邊、y 往上為正）。位置從 (0, 0)
+    /// 開始。回傳每一幀的輸出。
+    private func run(_ segments: [Segment]) -> [DesktopSwiper.Direction?] {
+        var swiper = DesktopSwiper()
+        var x = 0.0, y = 0.0
+        var outputs: [DesktopSwiper.Direction?] = []
+        for segment in segments {
+            for _ in 0..<Int((segment.seconds * 30).rounded()) {
+                x += segment.vx / 30
+                y += segment.vy / 30
+                outputs.append(swiper.update(threeFingers: segment.three, position: Vec2(x: x, y: y), at: Double(outputs.count) / 30))
+            }
+        }
+        return outputs
+    }
+
+    private func fired(_ segments: [Segment]) -> [DesktopSwiper.Direction] {
+        run(segments).compactMap { $0 }
+    }
+
+    /// 三指伸直、停 0.4 秒（超過 `hold`）。
+    private let ready: Segment = (true, 0.4, 0, 0)
+    /// 0.13 秒揮出 2 掌寬，每秒 15 掌寬。
+    private let quick = 4.0 / 30
+
+    @Test func handMovingRightGoesToTheLeftDesktop() {
+        // 慢慢收回不算。
+        #expect(fired([ready, (true, quick, 15, 0), (true, 1, -1.5, 0), (true, 1, 0, 0)]) == [.left])
+    }
+
+    @Test func handMovingLeftGoesToTheRightDesktop() {
+        #expect(fired([ready, (true, quick, -15, 0), (true, 1, 1.5, 0), (true, 1, 0, 0)]) == [.right])
+    }
+
+    @Test func handMovingUpOpensMissionControl() {
+        #expect(fired([ready, (true, quick, 0, 15), (true, 1, 0, -1.5), (true, 1, 0, 0)]) == [.up])
+    }
+
+    @Test func handMovingDownDoesNothing() {
+        #expect(fired([ready, (true, quick, 0, -15), (true, 1, 0, 1.5), (true, 1, 0, 0)]).isEmpty)
+    }
+
+    @Test func slowMovementDoesNothing() {
+        // 每秒 3 掌寬：低於往左右（4.5）與往上（4.0）的門檻。
+        #expect(fired([ready, (true, 1, 3, 0), (true, 1, -3, 0), (true, 1, 0, 3)]).isEmpty)
+    }
+
+    @Test func diagonalSwingDoesNothing() {
+        #expect(fired([ready, (true, quick, 10, 8), (true, 1, 0, 0)]).isEmpty)
+    }
+
+    @Test func oneSwingSwitchesOnlyOnce() {
+        // 揮一下的速度有起伏：中途降到門檻以下（4 掌寬/秒）但沒有降到 `rearm`，再加速也不再觸發。
+        #expect(fired([ready, (true, 3.0 / 30, 15, 0), (true, 2.0 / 30, 4, 0), (true, 3.0 / 30, 15, 0), (true, 1, 0, 0)]) == [.left])
+    }
+
+    @Test func fastReturnRightAfterSwingDoesNotSwitchBack() {
+        // 揮完停 0.1 秒就很快收回來（每秒 12 掌寬，0.2 秒收完）：在 `refractory` 內不算另一個方向。
+        #expect(fired([ready, (true, quick, 15, 0), (true, 0.1, 0, 0), (true, 6.0 / 30, -12, 0), (true, 0.5, 0, 0)]) == [.left])
+    }
+
+    @Test func oppositeSwingAfterShortPauseSwitches() {
+        // 實機試用：揮完馬上往反方向揮，不該要等 1 秒以上。停 0.6 秒後反向揮就換。
+        #expect(fired([ready, (true, quick, 15, 0), (true, 0.6, 0, 0), (true, quick, -15, 0), (true, 0.3, 0, 0)]) == [.left, .right])
+    }
+
+    @Test func oppositeSwingAfterLongPauseSwitches() {
+        #expect(fired([ready, (true, quick, 15, 0), (true, 2, 0, 0), (true, quick, -15, 0), (true, 0.3, 0, 0)]) == [.left, .right])
+    }
+
+    @Test func sameDirectionSwingsSwitchEachTime() {
+        // 連續往右揮兩次，中間慢慢收回：各換一個桌面，不必等 `refractory`。
+        #expect(fired([ready, (true, quick, 15, 0), (true, 1, -1.5, 0), (true, quick, 15, 0), (true, 0.3, 0, 0)]) == [.left, .left])
+    }
+
+    @Test func briefThreeFingersDoNotStartTheMode() {
+        // 三指只有一幀（不到 `hold`），之後手很快揮過去：不算。
+        #expect(fired([(false, 0.3, 0, 0), (true, 1.0 / 30, 0, 0), (false, 0.3, 0, 0), (false, quick, 15, 0), (false, 0.3, 0, 0)]).isEmpty)
+    }
+
+    @Test func swingThatFormsThreeFingersMidwaySwitches() {
+        // 實機錄影的往上揮：抬手的途中才伸出三指，姿勢只比速度峰值早約 0.05 秒；進入模式時揮動已經快結束，三指之前的位置也要算進速度。
+        #expect(fired([(false, 0.3, 0, 0), (false, 2.0 / 30, 0, 6), (true, 3.0 / 30, 0, 6), (true, 0.3, 0, 0)]) == [.up])
+    }
+
+    @Test func brieflyLosingThreeFingersDuringSwingStillSwitches() {
+        // 揮得快時手指常有 1–2 幀被誤判成別的姿勢。
+        #expect(fired([ready, (false, 2.0 / 30, 15, 0), (true, 2.0 / 30, 15, 0), (true, 0.5, 0, 0)]) == [.left])
+    }
+
+    @Test func leavingThreeFingersEndsTheMode() {
+        var swiper = DesktopSwiper()
+        for i in 0..<12 { _ = swiper.update(threeFingers: true, position: Vec2(x: 0, y: 0), at: Double(i) / 30) }
+        #expect(swiper.isActive)
+        for i in 12..<23 { _ = swiper.update(threeFingers: false, position: Vec2(x: 0, y: 0), at: Double(i) / 30) }
+        #expect(!swiper.isActive)
+        // 離開之後不是三指，揮了也不換桌面。
+        #expect(fired([ready, (false, 0.4, 0, 0), (false, quick, 15, 0), (false, 0.5, 0, 0)]).isEmpty)
+    }
+}
+
+@Suite struct FrameThrottleTests {
+    /// 以 `fps` 送入 `seconds` 秒的幀，`jitter` 為每幀時間的偏差（秒，輪流正負）；回傳被處理的幀時間。
+    private func processed(fps: Double, seconds: Double, idle: Bool, jitter: Double = 0) -> [Double] {
+        var throttle = FrameThrottle()
+        var times: [Double] = []
+        for i in 0..<Int(fps * seconds) {
+            let t = Double(i) / fps + (i % 2 == 0 ? jitter : -jitter)
+            if throttle.shouldProcess(at: t, idle: idle) { times.append(t) }
+        }
+        return times
+    }
+
+    @Test func idleProcessesEveryThirdFrameAt30Fps() {
+        #expect(processed(fps: 30, seconds: 3, idle: true).count == 30)
+    }
+
+    @Test func nonIdleProcessesEveryFrame() {
+        #expect(processed(fps: 30, seconds: 3, idle: false).count == 90)
+    }
+
+    @Test func idleStaysNearTenFpsWithJitter() {
+        // 相機幀的時間常有幾毫秒的抖動：仍約 10 fps，兩次之間不超過 0.15 秒。
+        let times = processed(fps: 30, seconds: 3, idle: true, jitter: 0.004)
+        #expect((29...31).contains(times.count))
+        #expect(zip(times, times.dropFirst()).allSatisfy { $1 - $0 <= 0.15 })
+    }
+
+    @Test func idleAtLowLightFrameRateStillSamples() {
+        // 光線不足時相機降到 15 fps：每 0.133 秒處理一幀。
+        let times = processed(fps: 15, seconds: 4, idle: true)
+        #expect(times.count >= 28 && times.count <= 32)
+    }
+
+    @Test func leavingIdleProcessesTheNextFrameImmediately() {
+        var throttle = FrameThrottle()
+        let first = throttle.shouldProcess(at: 0, idle: true)
+        let skipped = throttle.shouldProcess(at: 1.0 / 30, idle: true)
+        // 喚醒後換成每幀都處理，不必等滿 0.1 秒。
+        let awake = throttle.shouldProcess(at: 1.0 / 30, idle: false)
+        let next = throttle.shouldProcess(at: 2.0 / 30, idle: false)
+        #expect(first && !skipped && awake && next)
+    }
+}
+
 @Suite struct ScrollSmootherTests {
     @Test func spreadsCameraFramesOverDisplayFrames() {
         // 相機每 1/30 秒給 60 pt（每秒 1800 pt），螢幕每 1/120 秒送一次：每次最多約 20 pt，總量不變。
@@ -984,7 +1200,14 @@ private func makeGatheredHand() -> Hand {
     @Test func oldRecordingsStillDecode() throws {
         let line = #"{"t":1,"phase":"move","width":10,"height":10,"latencyMs":1,"inferenceMs":1,"hands":[]}"#
         let frame = try JSONDecoder().decode(FrameRecord.self, from: Data(line.utf8))
-        #expect(frame.face == nil && frame.target == nil && frame.faceMs == nil)
+        #expect(frame.face == nil && frame.target == nil && frame.faceMs == nil && frame.image == nil)
+    }
+
+    @Test func imageNameRoundTrips() throws {
+        var frame = FrameRecord(t: 1, phase: .gazeCheck, width: 10, height: 10, latencyMs: 1, inferenceMs: 1, hands: [])
+        frame.image = "frames/000012.jpg"
+        let decoded = try JSONDecoder().decode(FrameRecord.self, from: JSONEncoder().encode(frame))
+        #expect(decoded.image == "frames/000012.jpg")
     }
 
     /// 瞳孔在眼角之間的位置與目標成正比，頭不動：看眼睛的模型應該幾乎沒有誤差，只看頭的模型估不出來。

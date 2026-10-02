@@ -67,6 +67,7 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     ]
     private let mapper: ScreenMapper
     private let script: Script
+    private let frameStore: FrameStore?
     private let sink: @MainActor @Sendable (Event) -> Void
 
     private var device: AVCaptureDevice?
@@ -86,10 +87,13 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private var dropped = 0
     private var recentTimes: [Double] = []
     private var recentLatencies: [Double] = []
+    /// 最近一張存下的影像的擷取時間。
+    private var lastImageT = -Double.infinity
 
-    init(mapper: ScreenMapper, script: Script, sink: @escaping @MainActor @Sendable (Event) -> Void) {
+    init(mapper: ScreenMapper, script: Script, frameStore: FrameStore? = nil, sink: @escaping @MainActor @Sendable (Event) -> Void) {
         self.mapper = mapper
         self.script = script
+        self.frameStore = frameStore
         self.sink = sink
         probe = GestureProbe(mapper: mapper)
         super.init()
@@ -282,7 +286,7 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
 
     private func finish(_ pending: Pending, _ detection: Detection) {
         guard !finished else { return }
-        let frame = FrameRecord(
+        var frame = FrameRecord(
             t: pending.t,
             phase: pending.phase,
             width: CVPixelBufferGetWidth(pending.pixelBuffer),
@@ -296,6 +300,12 @@ final class HandCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
             faceMs: detection.faceMs,
             target: pending.target
         )
+        // 只存注視階段，約 10 Hz。
+        if let frameStore, pending.target != nil, pending.t - lastImageT >= FrameStore.interval,
+           let image = frameStore.save(pending.pixelBuffer, index: frames.count) {
+            frame.image = image
+            lastImageT = pending.t
+        }
         frames.append(frame)
         let result = probe.update(frame)
         if startTime == nil {

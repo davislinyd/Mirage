@@ -31,12 +31,16 @@ private enum Replay {
     /// 參與了調整：第一份定甩動的門檻，第二份找出往上甩之前的預備動作，把反方向的冷卻延長到 1.5 秒。第三份只用來驗證。
     static let swipe = ["swipe-2026-09-29T12-21-05Z", "swipe-2026-09-29T12-52-10Z", "swipe-2026-09-29T13-01-29Z"]
     static let swipeAvailable = swipe.allSatisfy(exists)
+    /// `mirage-spike desktop`：三指往右、往左、往上、往下各揮 10 下再慢慢收回；慢慢移動；兩指甩動；兩指扳機；日常。第一份定
+    /// 參數；第二份原本用來驗證（往右 14、往左 6、往上 5，慢慢移動階段誤觸 4），之後也拿來調參數，現在兩份都參與了調整。
+    static let desktop = ["desktop-2026-10-01T05-22-20Z", "desktop-2026-10-01T05-42-40Z"]
+    static let desktopAvailable = desktop.allSatisfy(exists)
     /// `mirage-spike gather`：五指捏合、張手 → 握拳、兩指扳機、日常；值為應觸發的次數。前兩份刻意張手停一下再捏合（5、
     /// 8 下），第三份照平常的速度（13 下），三份都參與了調整。第一份漏掉的一下拇指沒碰到中指（0.45 掌寬）。
     static let gather = ["gather-2026-10-02T14-08-51Z": 4, "gather-2026-10-02T14-13-07Z": 8, "gather-2026-10-02T14-24-20Z": 13]
     static let gatherAvailable = gather.keys.allSatisfy(exists)
     /// 沒有五指捏合的錄影：每個階段都不該送 ⌘M。
-    static let withoutGather = recordings + [scrolling] + gestures + precision + controls + controlsWithoutTaps + controlsWithTriggers + swipe
+    static let withoutGather = recordings + [scrolling] + gestures + precision + controls + controlsWithoutTaps + controlsWithTriggers + swipe + desktop
 
     static func exists(_ name: String) -> Bool {
         FileManager.default.fileExists(atPath: directory.appendingPathComponent("\(name).jsonl").path)
@@ -119,6 +123,33 @@ private enum Replay {
             let outputs = try Replay.active(frames, phase: phase)
             #expect(outputs.allSatisfy { $0.scrolling == nil && $0.scroll == nil && !$0.rightClick }, "\(name) \(phase)")
         }
+    }
+
+    /// 每 `stride` 幀處理一幀（從 `offset` 開始），統計 `phase` 中進入 Armed 的次數；進入後換新的 controller 回到待命。
+    private func wakes(_ frames: [FrameRecord], phase: Phase, stride: Int, offset: Int) throws -> Int {
+        let calibration = try Replay.calibrate(frames)
+        func fresh() -> CursorController { CursorController(calibration: calibration, screenWidth: 1440, screenHeight: 900) }
+        var controller = fresh()
+        var count = 0
+        for (index, frame) in frames.filter({ $0.phase == phase }).enumerated() where index % stride == offset {
+            if controller.update(hands: frame.hands, width: frame.width, height: frame.height, at: frame.t).state == .armed {
+                count += 1
+                controller = fresh()
+            }
+        }
+        return count
+    }
+
+    @Test(arguments: Replay.recordings) func wakeStillWorksWhenIdleSamplesAt10Fps(name: String) throws {
+        // 待命時每 3 幀處理 1 幀（`FrameThrottle`）：三份錄影的喚醒 8、5、5 次，三種起點都一樣；日常的誤喚醒也不增加。
+        let frames = try Replay.load(name)
+        for phase in [Phase.wake, .daily] {
+            let full = try wakes(frames, phase: phase, stride: 1, offset: 0)
+            for offset in 0..<3 {
+                #expect(try wakes(frames, phase: phase, stride: 3, offset: offset) == full, "\(name) \(phase) offset \(offset)")
+            }
+        }
+        #expect(try wakes(frames, phase: .wake, stride: 1, offset: 0) >= 5)
     }
 
     @Test func quickBendsScrollDown() throws {
@@ -278,6 +309,44 @@ private enum Replay {
         }
         let trigger = try Replay.active(frames, phase: .twoFingerTrigger)
         #expect(trigger.filter(\.escape).count >= 8 && trigger.allSatisfy { $0.scroll == nil })
+    }
+}
+
+@Suite(.enabled(if: Replay.desktopAvailable)) struct DesktopReplayTests {
+    /// 各方向換桌面的次數。
+    private func counts(_ outputs: [CursorController.Output]) -> (left: Int, right: Int, up: Int) {
+        let all = outputs.compactMap(\.desktop)
+        return (all.filter { $0 == .left }.count, all.filter { $0 == .right }.count, all.filter { $0 == .up }.count)
+    }
+
+    @Test(arguments: Replay.desktop) func swingsSwitchAndEverythingElseDoesNot(name: String) throws {
+        let frames = try Replay.load(name)
+        // 各揮 10 下再慢慢收回（第二份往右揮了 14 下）。往右揮 → ⌃←（`.left`），往左揮 → ⌃→（`.right`），往上揮 → ⌃↑
+        // （`.up`）；回程不算另一個方向。往左、往上揮時三指只在動作開頭出現 1–2 幀，無名指隨後就收起來；往上揮是抬手
+        // 的途中才伸出三指，姿勢只比速度峰值早 0.03–0.07 秒。
+        let rightOutputs = try Replay.active(frames, phase: .desktopRight)
+        let right = counts(rightOutputs)
+        #expect(right.left >= 6 && right.right == 0 && right.up == 0, "\(right)")
+        let leftOutputs = try Replay.active(frames, phase: .desktopLeft)
+        let left = counts(leftOutputs)
+        #expect(left.right >= 6 && left.left == 0 && left.up == 0, "\(left)")
+        let upOutputs = try Replay.active(frames, phase: .desktopUp)
+        let up = counts(upOutputs)
+        #expect(up.up >= 4 && up.left == 0 && up.right == 0, "\(up)")
+        // 一揮只換一個桌面：兩次之間至少隔 `cooldown`。
+        for (phase, outputs) in [(Phase.desktopRight, rightOutputs), (.desktopLeft, leftOutputs), (.desktopUp, upOutputs)] {
+            let times = zip(frames.filter { $0.phase == phase }, outputs).filter { $0.1.desktop != nil }.map(\.0.t)
+            #expect(zip(times, times.dropFirst()).allSatisfy { $1 - $0 >= 0.5 }, "\(phase) \(times)")
+        }
+        // 往下揮、兩指甩動、兩指扳機、日常、移動都不換桌面。
+        for phase in [Phase.desktopDown, .swipeUp, .twoFingerTrigger, .daily, .move] {
+            let other = counts(try Replay.active(frames, phase: phase))
+            #expect(other == (0, 0, 0), "\(phase) \(other)")
+        }
+        // 要求慢慢移動的階段：第二份移得不算慢（約 1.5 個掌寬、0.4–0.5 秒，峰值最高到 5.9 掌寬/秒），和刻意的一揮重疊，
+        // 只能降低而不能消除誤觸。
+        let hold = counts(try Replay.active(frames, phase: .desktopHold))
+        #expect(hold.left + hold.right + hold.up <= 4, "\(hold)")
     }
 }
 
